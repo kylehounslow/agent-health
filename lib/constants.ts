@@ -12,9 +12,9 @@ import { ENV_CONFIG, buildMLCommonsHeaders } from '@/lib/config';
  */
 function getClaudeCodeConnectorEnv(): Record<string, string> {
   const env: Record<string, string> = {
-    AWS_PROFILE: process.env.AWS_PROFILE || 'Bedrock',
+    AWS_PROFILE: ENV_CONFIG.awsProfile || 'Bedrock',
     CLAUDE_CODE_USE_BEDROCK: '1',
-    AWS_REGION: process.env.AWS_REGION || 'us-west-2',
+    AWS_REGION: ENV_CONFIG.awsRegion || 'us-west-2',
     DISABLE_PROMPT_CACHING: '1',
     DISABLE_ERROR_REPORTING: '1',
   };
@@ -126,6 +126,20 @@ export const DEFAULT_CONFIG: AppConfig = {
       provider: "litellm",
       context_window: 128000,
       max_output_tokens: 4096
+    },
+    "deepseek-r1:8b": {
+      model_id: "deepseek-r1:8b",
+      display_name: "DeepSeek R1 8B (Ollama)",
+      provider: "litellm",
+      context_window: 128000,
+      max_output_tokens: 8192
+    },
+    "gemma3:12b": {
+      model_id: "gemma3:12b",
+      display_name: "Gemma 3 12B (Ollama)",
+      provider: "litellm",
+      context_window: 128000,
+      max_output_tokens: 8192
     },
   },
   defaults: {
