@@ -3,34 +3,23 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React from 'react';
 import { Link } from 'react-router-dom';
 import { Activity, Gauge, TrendingUp, ArrowRight } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 
-const WORKFLOW_CARD_HIDDEN_KEY = 'agent-health-workflow-card-hidden';
-
 /**
- * How it works panel
- * Presents the continuous improvement loop: Trace → Evaluate → Improve
+ * How it works panel - First Run variant
+ * 
+ * Adapted from WorkflowNavigator for the first-run experience.
+ * Differences from standard WorkflowNavigator:
+ * - No localStorage persistence (not applicable for first-run)
+ * - No "Don't show again" functionality
+ * - Exploratory CTAs ("Explore Benchmarks", "Explore Traces")
+ * - Always visible (no hide/show state)
  */
-export const WorkflowNavigator: React.FC = () => {
-  const [isHidden, setIsHidden] = useState(
-    () => localStorage.getItem(WORKFLOW_CARD_HIDDEN_KEY) === 'true'
-  );
-
-  const handleDontShowAgain = () => {
-    localStorage.setItem(WORKFLOW_CARD_HIDDEN_KEY, 'true');
-    setIsHidden(true);
-    // Dispatch custom event to notify Dashboard
-    window.dispatchEvent(new CustomEvent('workflow-card-hidden'));
-  };
-
-  if (isHidden) {
-    return null;
-  }
-
+export const WorkflowNavigatorFirstRun: React.FC = () => {
   return (
     <Card className="relative overflow-hidden">
       <CardHeader className="pb-3">
@@ -127,7 +116,7 @@ export const WorkflowNavigator: React.FC = () => {
         {/* Marketing anchor line */}
 
 
-        {/* CTAs with pulsating animations */}
+        {/* CTAs with pulsating animations - exploratory for first-run */}
         <style>{`
           @keyframes pulse-glow {
             0%, 100% {
@@ -166,24 +155,14 @@ export const WorkflowNavigator: React.FC = () => {
         
         <div className="flex flex-col gap-2">
           <Button asChild size="sm" className="pulse-glow-btn border-0 text-white">
-            <Link to="/benchmarks">Run Benchmark</Link>
+            <Link to="/benchmarks">Explore Benchmarks</Link>
           </Button>
           <Button asChild variant="outline" size="sm" className="pulse-border-btn gap-1">
             <Link to="/agent-traces">
-              View Traces
+              Explore Traces
               <ArrowRight className="h-3 w-3" />
             </Link>
           </Button>
-        </div>
-
-        {/* Don't show again button - subtle and small */}
-        <div className="text-center pt-1">
-          <button
-            onClick={handleDontShowAgain}
-            className="text-[10px] text-muted-foreground/60 hover:text-muted-foreground transition-colors underline decoration-dotted underline-offset-2"
-          >
-            Don't show again
-          </button>
         </div>
       </CardContent>
     </Card>

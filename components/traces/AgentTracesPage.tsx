@@ -24,6 +24,9 @@ import {
   XCircle,
   ChevronRight,
   BarChart3,
+  ArrowUp,
+  ArrowDown,
+  ArrowUpDown,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -39,8 +42,6 @@ import {
 } from '@/services/traces';
 import { formatDuration } from '@/services/traces/utils';
 import { startMeasure, endMeasure } from '@/lib/performance';
-import TraceVisualization from './TraceVisualization';
-import ViewToggle, { ViewMode } from './ViewToggle';
 import { TraceFlyoutContent } from './TraceFlyoutContent';
 import MetricsOverview from './MetricsOverview';
 import { useSidebarCollapse } from '@/components/Layout';
@@ -59,6 +60,55 @@ interface TraceTableRow {
 }
 
 // ==================== Sub-Components ====================
+
+interface SortableHeaderProps {
+  column: keyof TraceTableRow | null;
+  label: string;
+  currentSort: keyof TraceTableRow | null;
+  sortDirection: 'asc' | 'desc';
+  onSort: (column: keyof TraceTableRow) => void;
+  className?: string;
+}
+
+const SortableHeader: React.FC<SortableHeaderProps> = ({
+  column,
+  label,
+  currentSort,
+  sortDirection,
+  onSort,
+  className = '',
+}) => {
+  if (!column) {
+    // Non-sortable header
+    return (
+      <th className={`h-12 px-4 text-left align-middle font-medium text-muted-foreground bg-background border-b ${className}`}>
+        {label}
+      </th>
+    );
+  }
+
+  const isActive = currentSort === column;
+
+  return (
+    <th className={`h-12 px-4 text-left align-middle font-medium text-muted-foreground bg-background border-b ${className}`}>
+      <button
+        onClick={() => onSort(column)}
+        className="flex items-center gap-1.5 hover:text-foreground transition-colors group w-full"
+      >
+        <span>{label}</span>
+        {isActive ? (
+          sortDirection === 'asc' ? (
+            <ArrowUp size={14} className="text-opensearch-blue" />
+          ) : (
+            <ArrowDown size={14} className="text-opensearch-blue" />
+          )
+        ) : (
+          <ArrowUpDown size={14} className="opacity-0 group-hover:opacity-40 transition-opacity" />
+        )}
+      </button>
+    </th>
+  );
+};
 
 interface TraceRowProps {
   trace: TraceTableRow;
@@ -120,11 +170,21 @@ export const AgentTracesPage: React.FC = () => {
   // Sidebar collapse control
   const { isCollapsed, setIsCollapsed } = useSidebarCollapse();
   
-  // Filter state
-  const [selectedAgent, setSelectedAgent] = useState<string>('all');
+  // Filter state with session persistence
+  const [selectedAgent, setSelectedAgent] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('agentTraces.selectedAgent') || 'all';
+    }
+    return 'all';
+  });
   const [textSearch, setTextSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [timeRange, setTimeRange] = useState<string>('1440'); // Default to 1 day
+  const [timeRange, setTimeRange] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('agentTraces.timeRange') || '1440';
+    }
+    return '1440';
+  });
 
   // Loading state
   const [isLoading, setIsLoading] = useState(false);
@@ -141,6 +201,10 @@ export const AgentTracesPage: React.FC = () => {
   const [allTraces, setAllTraces] = useState<TraceTableRow[]>([]); // All fetched traces
   const [displayedTraces, setDisplayedTraces] = useState<TraceTableRow[]>([]); // Currently displayed traces
   const [displayCount, setDisplayCount] = useState(100); // Number of traces to display
+
+  // Sorting state
+  const [sortColumn, setSortColumn] = useState<keyof TraceTableRow | null>('startTime');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
 
   // Flyout state
   const [flyoutOpen, setFlyoutOpen] = useState(false);
@@ -182,6 +246,19 @@ export const AgentTracesPage: React.FC = () => {
     return () => clearTimeout(timer);
   }, [textSearch]);
 
+  // Persist filter selections to localStorage
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('agentTraces.selectedAgent', selectedAgent);
+    }
+  }, [selectedAgent]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('agentTraces.timeRange', timeRange);
+    }
+  }, [timeRange]);
+
   // Convert spans to trace table rows
   const processSpansToTraces = useCallback((allSpans: Span[]): TraceTableRow[] => {
     const traceGroups = groupSpansByTrace(allSpans);
@@ -208,8 +285,50 @@ export const AgentTracesPage: React.FC = () => {
         hasErrors,
         spans: group.spans,
       };
-    }).sort((a, b) => b.startTime.getTime() - a.startTime.getTime());
+    });
   }, []);
+
+  // Sort traces based on current sort column and direction
+  const sortTraces = useCallback((traces: TraceTableRow[]): TraceTableRow[] => {
+    if (!sortColumn) return traces;
+
+    return [...traces].sort((a, b) => {
+      let aValue: any = a[sortColumn];
+      let bValue: any = b[sortColumn];
+
+      // Handle date comparison
+      if (sortColumn === 'startTime') {
+        aValue = aValue.getTime();
+        bValue = bValue.getTime();
+      }
+
+      // Handle string comparison (case-insensitive)
+      if (typeof aValue === 'string' && typeof bValue === 'string') {
+        aValue = aValue.toLowerCase();
+        bValue = bValue.toLowerCase();
+      }
+
+      // Compare values
+      let comparison = 0;
+      if (aValue < bValue) comparison = -1;
+      if (aValue > bValue) comparison = 1;
+
+      // Apply sort direction
+      return sortDirection === 'asc' ? comparison : -comparison;
+    });
+  }, [sortColumn, sortDirection]);
+
+  // Handle column header click for sorting
+  const handleSort = (column: keyof TraceTableRow) => {
+    if (sortColumn === column) {
+      // Toggle direction if same column
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      // New column, default to descending for time/duration, ascending for others
+      setSortColumn(column);
+      setSortDirection(column === 'startTime' || column === 'duration' ? 'desc' : 'asc');
+    }
+  };
 
   // Refs for cursor/spans used by loadMoreTraces (avoid re-creating fetchTraces on every data change)
   const cursorRef = React.useRef<string | null>(null);
@@ -219,45 +338,39 @@ export const AgentTracesPage: React.FC = () => {
 
   // Fetch traces (fresh load — resets pagination)
   const fetchTraces = useCallback(async () => {
-    startMeasure('AgentTracesPage.fetchTraces');
     setIsLoading(true);
     setCursor(null);
     setError(null);
 
     try {
-      startMeasure('AgentTracesPage.apiCall');
       const result = await fetchRecentTraces({
         minutesAgo: parseInt(timeRange),
         serviceName: selectedAgent !== 'all' ? selectedAgent : undefined,
         textSearch: debouncedSearch || undefined,
         size: 100,
       });
-      endMeasure('AgentTracesPage.apiCall');
 
       if (result.warning) {
         setError(`Trace query warning: ${result.warning}`);
       }
 
-      startMeasure('AgentTracesPage.processTraces');
       setSpans(result.spans);
       const processedTraces = processSpansToTraces(result.spans);
-      setAllTraces(processedTraces);
-      setDisplayedTraces(processedTraces.slice(0, 100));
+      const sortedTraces = sortTraces(processedTraces);
+      setAllTraces(sortedTraces);
+      setDisplayedTraces(sortedTraces.slice(0, 100));
       setDisplayCount(100);
       setLastRefresh(new Date());
 
       // Update pagination state
       setCursor(result.nextCursor || null);
       setHasMore(result.hasMore || false);
-
-      endMeasure('AgentTracesPage.processTraces');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch traces');
     } finally {
       setIsLoading(false);
-      endMeasure('AgentTracesPage.fetchTraces');
     }
-  }, [selectedAgent, debouncedSearch, timeRange, processSpansToTraces]);
+  }, [selectedAgent, debouncedSearch, timeRange, processSpansToTraces, sortTraces]);
 
   // Load more traces from server (appends to existing data)
   const loadMoreTraces = useCallback(async () => {
@@ -298,6 +411,12 @@ export const AgentTracesPage: React.FC = () => {
     fetchTraces();
   }, [fetchTraces]);
 
+  // Re-sort traces when sort column or direction changes
+  useEffect(() => {
+    const sortedTraces = sortTraces(allTraces);
+    setDisplayedTraces(sortedTraces.slice(0, displayCount));
+  }, [sortColumn, sortDirection, allTraces, displayCount, sortTraces]);
+
   // Handle scroll to hide/show container header
   useEffect(() => {
     const scrollContainer = scrollContainerRef.current;
@@ -327,7 +446,8 @@ export const AgentTracesPage: React.FC = () => {
           if (displayCount < allTraces.length) {
             // Client-side: show next batch of already-fetched traces
             const nextCount = Math.min(displayCount + 100, allTraces.length);
-            setDisplayedTraces(allTraces.slice(0, nextCount));
+            const sortedTraces = sortTraces(allTraces);
+            setDisplayedTraces(sortedTraces.slice(0, nextCount));
             setDisplayCount(nextCount);
           } else if (hasMore && !isLoadingMore) {
             // Server-side: fetch next page from the API
@@ -347,7 +467,7 @@ export const AgentTracesPage: React.FC = () => {
     return () => {
       observer.unobserve(currentRef);
     };
-  }, [displayCount, allTraces, hasMore, isLoadingMore, loadMoreTraces]);
+  }, [displayCount, allTraces, hasMore, isLoadingMore, loadMoreTraces, sortTraces]);
 
   // Handle trace selection
   const handleSelectTrace = (trace: TraceTableRow) => {
@@ -504,15 +624,15 @@ export const AgentTracesPage: React.FC = () => {
                 </div>
               </div>
 
-              {/* Search Bar */}
-              <div className="w-[220px]">
+              {/* Search Bar - Primary Action */}
+              <div className="w-[280px]">
                 <div className="relative">
-                  <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                  <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#5B9BD5]" strokeWidth={2.5} />
                   <Input
-                    placeholder="Search"
+                    placeholder="Search traces, services, spans..."
                     value={textSearch}
                     onChange={(e) => setTextSearch(e.target.value)}
-                    className="pl-8 h-8 text-sm"
+                    className="pl-10 h-9 text-sm bg-background dark:bg-opensearch-blue/15 border-opensearch-blue/60 dark:border-opensearch-blue/70 focus-visible:bg-background focus-visible:border-opensearch-blue dark:focus-visible:border-opensearch-blue focus-visible:ring-opensearch-blue/30 placeholder:text-muted-foreground dark:placeholder:text-white"
                   />
                 </div>
               </div>
@@ -584,9 +704,17 @@ export const AgentTracesPage: React.FC = () => {
       {/* Error State */}
       {error && (
         <div className="px-6 pt-4">
-          <Card className="bg-red-50 dark:bg-red-500/10 border-red-300 dark:border-red-500/30">
-            <CardContent className="p-4 text-sm text-red-700 dark:text-red-400">
-              {error}
+          <Card className="bg-blue-50 dark:bg-blue-500/10 border-blue-300 dark:border-blue-500/30">
+            <CardContent className="p-4 text-sm text-blue-700 dark:text-blue-400">
+              <div className="flex items-start gap-3">
+                <AlertCircle size={18} className="flex-shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-medium mb-1">No OpenSearch cluster connected</p>
+                  <p className="text-xs opacity-90">
+                    Connect to an OpenSearch cluster in Settings to view agent traces and execution data.
+                  </p>
+                </div>
+              </div>
             </CardContent>
           </Card>
         </div>
@@ -632,25 +760,57 @@ export const AgentTracesPage: React.FC = () => {
                     isScrolled ? 'shadow-sm' : ''
                   }`}>
                     <tr className="border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted">
-                      <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground w-[180px] bg-background border-b">
-                        Start Time
-                      </th>
-                      <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground bg-background border-b">
-                        Trace ID
-                      </th>
-                      <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground bg-background border-b">
-                        Root Span
-                      </th>
-                      <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground bg-background border-b">
-                        Service
-                      </th>
-                      <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground bg-background border-b">
-                        Duration
-                      </th>
-                      <th className="h-12 px-4 text-center align-middle font-medium text-muted-foreground bg-background border-b">
-                        Spans
-                      </th>
-                      <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground bg-background border-b"></th>
+                      <SortableHeader
+                        column="startTime"
+                        label="Start Time"
+                        currentSort={sortColumn}
+                        sortDirection={sortDirection}
+                        onSort={handleSort}
+                        className="w-[180px]"
+                      />
+                      <SortableHeader
+                        column="traceId"
+                        label="Trace ID"
+                        currentSort={sortColumn}
+                        sortDirection={sortDirection}
+                        onSort={handleSort}
+                      />
+                      <SortableHeader
+                        column="rootSpanName"
+                        label="Root Span"
+                        currentSort={sortColumn}
+                        sortDirection={sortDirection}
+                        onSort={handleSort}
+                      />
+                      <SortableHeader
+                        column="serviceName"
+                        label="Service"
+                        currentSort={sortColumn}
+                        sortDirection={sortDirection}
+                        onSort={handleSort}
+                      />
+                      <SortableHeader
+                        column="duration"
+                        label="Duration"
+                        currentSort={sortColumn}
+                        sortDirection={sortDirection}
+                        onSort={handleSort}
+                      />
+                      <SortableHeader
+                        column="spanCount"
+                        label="Spans"
+                        currentSort={sortColumn}
+                        sortDirection={sortDirection}
+                        onSort={handleSort}
+                        className="text-center"
+                      />
+                      <SortableHeader
+                        column={null}
+                        label=""
+                        currentSort={sortColumn}
+                        sortDirection={sortDirection}
+                        onSort={handleSort}
+                      />
                     </tr>
                   </thead>
                   <tbody className="[&_tr:last-child]:border-0">
