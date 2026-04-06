@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { ENV_CONFIG } from '@/lib/config';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip,
@@ -488,8 +488,147 @@ function TodaySummary({ stats }: { stats: CombinedStats }) {
 
 // ─── Overview Tab ─────────────────────────────────────────────────────────────
 
-function OverviewTab({ stats, agents, onTabChange, rangePreset }: { stats: CombinedStats | null; agents: AgentInfo[]; onTabChange: (tab: string) => void; rangePreset: DateRangePreset }) {
+function OverviewWelcome({ agents, rangePreset, onRangeChange }: { agents: AgentInfo[]; rangePreset: DateRangePreset; onRangeChange: (p: DateRangePreset) => void }) {
+  const detected = agents.map(a => a.displayName || AGENT_LABELS[a.name] || a.name);
+  const hasClaudeCode = agents.some(a => a.name === 'claude-code');
+  const hasKiro = agents.some(a => a.name === 'kiro');
+  const hasCodex = agents.some(a => a.name === 'codex');
+
+  return (
+    <div className="space-y-6">
+      {/* Hero welcome */}
+      <Card className="border-dashed">
+        <CardContent className="pt-8 pb-8 text-center max-w-xl mx-auto">
+          <h3 className="text-lg font-semibold mb-2">Getting Started</h3>
+          <p className="text-sm text-muted-foreground mb-1">
+            This dashboard automatically reads your local coding agent session history to show cost, activity, tool usage, and productivity insights.
+          </p>
+          {detected.length > 0 && (
+            <p className="text-sm text-muted-foreground mt-3">
+              <span className="font-medium text-foreground">{detected.join(' and ')}</span> detected on this machine
+              {rangePreset === 'today' ? ' — no sessions found today.' : ' — no sessions found in this time range.'}
+            </p>
+          )}
+          {rangePreset === 'today' && (
+            <div className="flex items-center justify-center gap-2 mt-4">
+              <span className="text-xs text-muted-foreground">Try a wider range:</span>
+              {(['7d', '30d', 'all'] as DateRangePreset[]).map(p => (
+                <button
+                  key={p}
+                  onClick={() => onRangeChange(p)}
+                  className="text-xs px-3 py-1.5 rounded-md border border-border hover:bg-muted transition-colors"
+                >
+                  {p === '7d' ? 'Last 7 Days' : p === '30d' ? 'Last 30 Days' : 'All Time'}
+                </button>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Getting started steps per agent */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <Card className={hasClaudeCode ? 'border-orange-500/40' : 'border-dashed opacity-60'}>
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm font-medium">Claude Code</CardTitle>
+              {hasClaudeCode
+                ? <span className="text-[10px] font-medium text-green-600 bg-green-500/10 px-1.5 py-0.5 rounded">Detected</span>
+                : <span className="text-[10px] font-medium text-muted-foreground bg-muted px-1.5 py-0.5 rounded">Not found</span>}
+            </div>
+          </CardHeader>
+          <CardContent className="text-xs text-muted-foreground space-y-2">
+            {hasClaudeCode ? (
+              <p>Sessions are read from <code className="text-[11px] bg-muted px-1 py-0.5 rounded">~/.claude/projects/</code>. Start a conversation in any project to see data here.</p>
+            ) : (
+              <>
+                <p>Install Claude Code to track sessions, costs, and tool usage.</p>
+                <p className="font-mono text-[11px] bg-muted px-2 py-1.5 rounded">npm install -g @anthropic-ai/claude-code</p>
+              </>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className={hasKiro ? 'border-purple-500/40' : 'border-dashed opacity-60'}>
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm font-medium">Kiro</CardTitle>
+              {hasKiro
+                ? <span className="text-[10px] font-medium text-green-600 bg-green-500/10 px-1.5 py-0.5 rounded">Detected</span>
+                : <span className="text-[10px] font-medium text-muted-foreground bg-muted px-1.5 py-0.5 rounded">Not found</span>}
+            </div>
+          </CardHeader>
+          <CardContent className="text-xs text-muted-foreground space-y-2">
+            {hasKiro ? (
+              <p>Sessions are read from <code className="text-[11px] bg-muted px-1 py-0.5 rounded">~/.kiro/</code>. Use Kiro IDE to generate session data.</p>
+            ) : (
+              <>
+                <p>Install the Kiro IDE to track AI-assisted development sessions.</p>
+                <p className="text-[11px]">Download from <span className="font-medium text-foreground">kiro.dev</span></p>
+              </>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className={hasCodex ? 'border-green-500/40' : 'border-dashed opacity-60'}>
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm font-medium">Codex</CardTitle>
+              {hasCodex
+                ? <span className="text-[10px] font-medium text-green-600 bg-green-500/10 px-1.5 py-0.5 rounded">Detected</span>
+                : <span className="text-[10px] font-medium text-muted-foreground bg-muted px-1.5 py-0.5 rounded">Not found</span>}
+            </div>
+          </CardHeader>
+          <CardContent className="text-xs text-muted-foreground space-y-2">
+            {hasCodex ? (
+              <p>Sessions are read from <code className="text-[11px] bg-muted px-1 py-0.5 rounded">~/.codex/</code>. Run Codex in any project to see data.</p>
+            ) : (
+              <>
+                <p>Install Codex CLI to track OpenAI-powered coding sessions.</p>
+                <p className="font-mono text-[11px] bg-muted px-2 py-1.5 rounded">npm install -g @openai/codex</p>
+              </>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* What you'll see */}
+      <Card className="border-dashed">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium text-muted-foreground">What you'll see once you have session data</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center text-xs text-muted-foreground">
+            <div className="space-y-1">
+              <div className="text-lg font-semibold text-foreground/30">$--</div>
+              <p>Daily cost tracking with wasted spend detection</p>
+            </div>
+            <div className="space-y-1">
+              <div className="text-lg font-semibold text-foreground/30">--%</div>
+              <p>Session completion rate and efficiency metrics</p>
+            </div>
+            <div className="space-y-1">
+              <div className="text-lg font-semibold text-foreground/30">--</div>
+              <p>Tool success rates and error patterns</p>
+            </div>
+            <div className="space-y-1">
+              <div className="text-lg font-semibold text-foreground/30">--</div>
+              <p>Per-project breakdown and activity trends</p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange }: { stats: CombinedStats | null; agents: AgentInfo[]; onTabChange: (tab: string) => void; rangePreset: DateRangePreset; onRangeChange: (p: DateRangePreset) => void }) {
   if (!stats) return <OverviewSkeleton />;
+
+  // Show welcome state when no sessions exist
+  if (stats.totalSessions === 0) {
+    return <OverviewWelcome agents={agents} rangePreset={rangePreset} onRangeChange={onRangeChange} />;
+  }
 
   const agentPieData = stats.agents.map(a => ({
     name: AGENT_LABELS[a.agent] ?? a.agent,
@@ -604,6 +743,9 @@ function SessionDetailPanel({ session, onClose }: { session: Session; onClose: (
   const [loading, setLoading] = useState(true);
   const [msgSearch, setMsgSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState<string>('all');
+  const [panelWidth, setPanelWidth] = useState(672); // ~max-w-2xl
+  const panelRef = useRef<HTMLDivElement>(null);
+  const isResizing = useRef(false);
 
   useEffect(() => {
     setLoading(true);
@@ -613,6 +755,48 @@ function SessionDetailPanel({ session, onClose }: { session: Session; onClose: (
       .finally(() => setLoading(false));
   }, [session.agent, session.session_id]);
 
+  // Close on click outside
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (isResizing.current) return;
+      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
+        onClose();
+      }
+    };
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('mousedown', handleClick);
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('mousedown', handleClick);
+      document.removeEventListener('keydown', handleKey);
+    };
+  }, [onClose]);
+
+  // Resize drag handler
+  const startResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizing.current = true;
+    const startX = e.clientX;
+    const startWidth = panelWidth;
+    const onMouseMove = (ev: MouseEvent) => {
+      const delta = startX - ev.clientX;
+      setPanelWidth(Math.max(400, Math.min(window.innerWidth - 100, startWidth + delta)));
+    };
+    const onMouseUp = () => {
+      isResizing.current = false;
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }, [panelWidth]);
+
   const filteredMessages = (detail?.messages ?? []).filter(msg => {
     if (roleFilter !== 'all' && msg.role !== roleFilter) return false;
     if (msgSearch && !msg.text.toLowerCase().includes(msgSearch.toLowerCase()) &&
@@ -621,7 +805,20 @@ function SessionDetailPanel({ session, onClose }: { session: Session; onClose: (
   });
 
   return (
-    <div className="fixed inset-y-0 right-0 w-full max-w-2xl bg-background border-l shadow-xl z-50 overflow-y-auto">
+    <>
+    {/* Backdrop */}
+    <div className="fixed inset-0 bg-black/20 z-40" />
+    <div
+      ref={panelRef}
+      className="fixed inset-y-0 right-0 bg-background border-l shadow-xl z-50 overflow-y-auto flex"
+      style={{ width: panelWidth }}
+    >
+      {/* Resize handle */}
+      <div
+        className="w-1.5 flex-shrink-0 cursor-col-resize hover:bg-primary/20 active:bg-primary/30 transition-colors"
+        onMouseDown={startResize}
+      />
+      <div className="flex-1 min-w-0 flex flex-col">
       <div className="sticky top-0 bg-background border-b p-4 flex items-center justify-between z-10">
         <div>
           <h3 className="font-semibold text-sm">Session Detail</h3>
@@ -698,7 +895,9 @@ function SessionDetailPanel({ session, onClose }: { session: Session; onClose: (
           </div>
         )}
       </div>
-    </div>
+      </div>{/* flex-1 */}
+    </div>{/* panel */}
+    </>
   );
 }
 
@@ -2262,7 +2461,7 @@ export const CodingAgentsPage: React.FC = () => {
           </TabsList>
 
           <TabsContent value="overview" className="mt-4">
-            <OverviewTab stats={stats} agents={agents} onTabChange={setActiveTab} rangePreset={rangePreset} />
+            <OverviewTab stats={stats} agents={agents} onTabChange={setActiveTab} rangePreset={rangePreset} onRangeChange={setRangePreset} />
           </TabsContent>
           <TabsContent value="sessions" className="mt-4">
             <SessionsTab range={range} loading={loading} initialProject={sessionProjectFilter} />
