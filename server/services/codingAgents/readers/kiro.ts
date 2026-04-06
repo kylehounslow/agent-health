@@ -5,7 +5,15 @@
 
 /**
  * Kiro reader — parses ~/.kiro/sessions/cli/ JSONL session files
- * and the companion JSON metadata files for token counts.
+ * and the companion JSON metadata files for token counts and timestamps.
+ *
+ * Kiro JSONL uses a versioned format with `kind` discriminator:
+ *   - kind: "Prompt"            → user message
+ *   - kind: "AssistantMessage"  → assistant response
+ *   - kind: "ToolResults"       → tool execution results
+ *
+ * Timestamps and token counts come from the companion .json metadata file,
+ * not from the JSONL itself.
  */
 
 import fs from 'fs/promises';
@@ -44,8 +52,6 @@ async function readSessionMetaJson(sessionId: string): Promise<AnyObj | null> {
 
 async function deriveSessionFromJSONL(filePath: string): Promise<AgentSession | null> {
   const sessionId = path.basename(filePath, '.jsonl');
-  let startTime = '';
-  let lastTime = '';
   let userCount = 0;
   let assistantCount = 0;
   const toolCounts: Record<string, number> = {};
@@ -54,8 +60,7 @@ async function deriveSessionFromJSONL(filePath: string): Promise<AgentSession | 
   let totalToolErrors = 0;
   let firstPrompt = '';
   let hasMcp = false;
-  let projectPath = '';
-  let lastMessageType = '';
+  let lastMessageKind = '';
 
   try {
     const raw = await fs.readFile(filePath, 'utf-8');
@@ -63,68 +68,136 @@ async function deriveSessionFromJSONL(filePath: string): Promise<AgentSession | 
     for (const line of lines) {
       try {
         const obj: AnyObj = JSON.parse(line);
-        const ts = obj.timestamp as string;
-        if (ts) {
-          if (!startTime) startTime = ts;
-          lastTime = ts;
-        }
-        if (obj.cwd && !projectPath) projectPath = obj.cwd;
+        const kind = obj.kind as string;
+        const data = obj.data;
+        if (!data) continue;
 
-        if (obj.role === 'user') {
+        // ── User prompt ─────────────────────────────────────────────
+        if (kind === 'Prompt') {
           userCount++;
-          lastMessageType = 'user';
-          if (typeof obj.content === 'string' && !firstPrompt) {
-            firstPrompt = obj.content.slice(0, 500);
-          } else if (Array.isArray(obj.content)) {
-            const text = obj.content.find((c: AnyObj) => c.type === 'text');
-            if (text?.text && !firstPrompt) firstPrompt = text.text.slice(0, 500);
-            // Check for tool result errors
-            for (const c of obj.content) {
-              if ((c.type === 'tool_result' || c.kind === 'ToolResults') && (c.is_error === true || c.isError === true)) {
-                const toolName = toolUseIdToName[c.tool_use_id ?? c.toolUseId] ?? 'unknown';
+          lastMessageKind = 'Prompt';
+          if (Array.isArray(data.content) && !firstPrompt) {
+            const textBlock = data.content.find((c: AnyObj) => c.kind === 'text');
+            if (textBlock?.data) {
+              let promptText = textBlock.data as string;
+              // Skip session naming agent prompts (internal Kiro mechanism)
+              if (promptText.startsWith('You are a session naming agent')) {
+                userCount--; // don't count this as a real user message
+              } else {
+                // Strip session context preamble if present
+                const marker = '[CURRENT USER REQUEST';
+                const idx = promptText.indexOf(marker);
+                if (idx >= 0) {
+                  const afterMarker = promptText.indexOf('\n', idx);
+                  if (afterMarker >= 0) promptText = promptText.slice(afterMarker + 1).trim();
+                }
+                // Strip trailing options marker
+                const optIdx = promptText.indexOf('\n(If presenting choices');
+                if (optIdx >= 0) promptText = promptText.slice(0, optIdx).trim();
+                if (promptText) firstPrompt = promptText.slice(0, 500);
+              }
+            }
+          }
+          // Check for tool result errors embedded in prompt content
+          if (Array.isArray(data.content)) {
+            for (const c of data.content) {
+              if ((c.kind === 'toolResult' || c.type === 'tool_result') && c.data?.isError === true) {
+                const toolName = toolUseIdToName[c.data?.toolUseId] ?? 'unknown';
                 toolErrorCounts[toolName] = (toolErrorCounts[toolName] ?? 0) + 1;
                 totalToolErrors++;
               }
             }
           }
         }
-        if (obj.role === 'assistant') {
+
+        // ── Assistant message ───────────────────────────────────────
+        if (kind === 'AssistantMessage') {
           assistantCount++;
-          lastMessageType = 'assistant';
-          if (Array.isArray(obj.content)) {
-            for (const c of obj.content) {
-              if (c.type === 'tool_use' && c.toolName) {
-                const name = c.serverName ? `mcp_${c.serverName}__${c.toolName}` : c.toolName;
-                toolCounts[name] = (toolCounts[name] ?? 0) + 1;
-                if (c.toolUseId) toolUseIdToName[c.toolUseId] = name;
-                if (c.id) toolUseIdToName[c.id] = name;
-                if (c.serverName) hasMcp = true;
+          lastMessageKind = 'AssistantMessage';
+          if (Array.isArray(data.content)) {
+            for (const c of data.content) {
+              if (c.kind === 'toolUse' && c.data) {
+                const toolData = c.data;
+                const serverName = toolData.serverName;
+                const toolName = serverName
+                  ? `mcp_${serverName}__${toolData.name}`
+                  : (toolData.name ?? 'unknown');
+                toolCounts[toolName] = (toolCounts[toolName] ?? 0) + 1;
+                if (toolData.toolUseId) toolUseIdToName[toolData.toolUseId] = toolName;
+                if (serverName) hasMcp = true;
               }
             }
           }
         }
-        // Handle standalone ToolResults blocks
-        if (obj.kind === 'ToolResults' && obj.data?.results) {
-          for (const [id, result] of Object.entries(obj.data.results as Record<string, AnyObj>)) {
-            if (result?.isError === true || (result?.result && !result.result.Success)) {
-              const toolName = toolUseIdToName[id] ?? 'unknown';
-              toolErrorCounts[toolName] = (toolErrorCounts[toolName] ?? 0) + 1;
-              totalToolErrors++;
+
+        // ── Standalone ToolResults ──────────────────────────────────
+        if (kind === 'ToolResults' && data.content) {
+          for (const c of (Array.isArray(data.content) ? data.content : [])) {
+            if (c.kind === 'toolResult' && c.data) {
+              const rd = c.data;
+              if (rd.isError === true) {
+                const toolName = toolUseIdToName[rd.toolUseId] ?? 'unknown';
+                toolErrorCounts[toolName] = (toolErrorCounts[toolName] ?? 0) + 1;
+                totalToolErrors++;
+              }
+            }
+          }
+          // Also check the results map form — this has richer metadata including serverName
+          if (data.results) {
+            for (const [id, result] of Object.entries(data.results as Record<string, AnyObj>)) {
+              // Detect MCP server name from the tool metadata
+              const toolMeta = result?.tool;
+              if (toolMeta?.kind?.Mcp?.serverName) {
+                const serverName = toolMeta.kind.Mcp.serverName;
+                const rawName = toolMeta.kind.Mcp.toolName ?? toolUseIdToName[id];
+                if (rawName && !toolUseIdToName[id]?.startsWith('mcp_')) {
+                  const mcpName = `mcp_${serverName}__${rawName}`;
+                  // Remap: subtract from old name, add to mcp name
+                  const oldName = toolUseIdToName[id] ?? rawName;
+                  if (toolCounts[oldName]) {
+                    toolCounts[oldName]--;
+                    if (toolCounts[oldName] <= 0) delete toolCounts[oldName];
+                  }
+                  toolCounts[mcpName] = (toolCounts[mcpName] ?? 0) + 1;
+                  toolUseIdToName[id] = mcpName;
+                  hasMcp = true;
+                }
+              }
+              if (result?.isError === true || (result?.result && !result.result.Success)) {
+                const toolName = toolUseIdToName[id] ?? 'unknown';
+                toolErrorCounts[toolName] = (toolErrorCounts[toolName] ?? 0) + 1;
+                totalToolErrors++;
+              }
             }
           }
         }
-      } catch { /* skip */ }
+      } catch { /* skip malformed */ }
     }
   } catch {
     return null;
   }
 
+  // ── Metadata from companion JSON ────────────────────────────────────────
+  const meta = await readSessionMetaJson(sessionId);
+  if (!meta) return null;
+
+  const startTime = meta.created_at as string;
+  const lastTime = meta.updated_at as string;
   if (!startTime) return null;
+
+  const projectPath = (meta.cwd as string) || 'unknown';
 
   let inputTokens = 0;
   let outputTokens = 0;
-  const meta = await readSessionMetaJson(sessionId);
-  if (meta?.turns && Array.isArray(meta.turns)) {
+  const sessionState = meta.session_state;
+  if (sessionState?.conversation_metadata?.user_turn_metadatas) {
+    for (const turn of sessionState.conversation_metadata.user_turn_metadatas) {
+      inputTokens += turn.input_token_count ?? 0;
+      outputTokens += turn.output_token_count ?? 0;
+    }
+  }
+  // Also check top-level turns array (alternate format)
+  if (meta.turns && Array.isArray(meta.turns)) {
     for (const turn of meta.turns) {
       inputTokens += turn.input_token_count ?? 0;
       outputTokens += turn.output_token_count ?? 0;
@@ -136,10 +209,13 @@ async function deriveSessionFromJSONL(filePath: string): Promise<AgentSession | 
   const durationMinutes = (end - start) / 60_000;
   const cost = estimateCost('us.anthropic.claude-sonnet-4-6-v1', inputTokens, outputTokens);
 
+  // Check if last assistant message has text content for completion detection
+  const sessionCompleted = lastMessageKind === 'AssistantMessage';
+
   return {
     agent: 'kiro',
     session_id: sessionId,
-    project_path: projectPath || 'unknown',
+    project_path: projectPath,
     start_time: startTime,
     duration_minutes: durationMinutes,
     user_message_count: userCount,
@@ -147,7 +223,7 @@ async function deriveSessionFromJSONL(filePath: string): Promise<AgentSession | 
     tool_counts: toolCounts,
     tool_error_counts: toolErrorCounts,
     total_tool_errors: totalToolErrors,
-    session_completed: lastMessageType === 'assistant',
+    session_completed: sessionCompleted,
     input_tokens: inputTokens,
     output_tokens: outputTokens,
     cache_creation_input_tokens: 0,
