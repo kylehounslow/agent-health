@@ -6,7 +6,7 @@
 /**
  * Codex CLI reader — parses ~/.codex/sessions/ JSONL rollout files.
  * Token counts are not persisted to rollout files, so cost estimation
- * is unavailable. We still capture session activity and tool usage.
+ * is unavailable. Tool errors use content-based heuristics.
  */
 
 import fs from 'fs/promises';
@@ -23,9 +23,8 @@ function codexPath(...segments: string[]): string {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyObj = Record<string, any>;
 
-/**
- * Recursively find all rollout-*.jsonl files under ~/.codex/sessions/
- */
+const ERROR_PATTERN = /\b(error|exception|traceback|ENOENT|EACCES|permission denied|command failed|no such file)\b/i;
+
 async function findRolloutFiles(dir: string): Promise<string[]> {
   const results: string[] = [];
   try {
@@ -44,7 +43,6 @@ async function findRolloutFiles(dir: string): Promise<string[]> {
 
 async function deriveSessionFromRollout(filePath: string): Promise<AgentSession | null> {
   const filename = path.basename(filePath, '.jsonl');
-  // rollout-YYYY-MM-DDTHH-MM-SS-sssZ-{conversation_id}.jsonl
   const sessionId = filename.replace('rollout-', '');
 
   let startTime = '';
@@ -52,9 +50,14 @@ async function deriveSessionFromRollout(filePath: string): Promise<AgentSession 
   let userCount = 0;
   let assistantCount = 0;
   const toolCounts: Record<string, number> = {};
+  const toolErrorCounts: Record<string, number> = {};
+  let totalToolErrors = 0;
   let firstPrompt = '';
   let projectPath = '';
   let model = '';
+  let lastMessageType = '';
+  // Track the last tool name for correlating with function_call_output
+  let lastToolName = '';
 
   try {
     const raw = await fs.readFile(filePath, 'utf-8');
@@ -71,16 +74,15 @@ async function deriveSessionFromRollout(filePath: string): Promise<AgentSession 
         const item = obj.item;
         if (!item) continue;
 
-        // SessionMeta contains cwd, model info
         if (item.type === 'SessionMeta') {
           if (item.working_directory) projectPath = item.working_directory;
           if (item.model) model = item.model;
         }
 
-        // ResponseItem: user or assistant messages
         if (item.type === 'message') {
           if (item.role === 'user') {
             userCount++;
+            lastMessageType = 'user';
             if (Array.isArray(item.content)) {
               const text = item.content.find((c: AnyObj) => c.type === 'input_text');
               if (text?.text && !firstPrompt) firstPrompt = text.text.slice(0, 500);
@@ -88,18 +90,24 @@ async function deriveSessionFromRollout(filePath: string): Promise<AgentSession 
           }
           if (item.role === 'assistant') {
             assistantCount++;
+            lastMessageType = 'assistant';
           }
         }
 
-        // EventMsg: tool executions
-        if (item.type === 'EventMsg' || item.type === 'function_call') {
+        if (item.type === 'function_call') {
           const toolName = item.name ?? item.tool_name ?? 'unknown';
           toolCounts[toolName] = (toolCounts[toolName] ?? 0) + 1;
+          lastToolName = toolName;
         }
 
-        // Function call outputs in responses API format
+        // Best-effort error detection from function call output content
         if (item.type === 'function_call_output') {
-          // These are results, tool was already counted on the call
+          const output = typeof item.output === 'string' ? item.output : '';
+          if (ERROR_PATTERN.test(output)) {
+            const toolName = lastToolName || 'unknown';
+            toolErrorCounts[toolName] = (toolErrorCounts[toolName] ?? 0) + 1;
+            totalToolErrors++;
+          }
         }
       } catch { /* skip malformed */ }
     }
@@ -122,12 +130,15 @@ async function deriveSessionFromRollout(filePath: string): Promise<AgentSession 
     user_message_count: userCount,
     assistant_message_count: assistantCount,
     tool_counts: toolCounts,
-    input_tokens: 0, // Not persisted in rollout files
+    tool_error_counts: toolErrorCounts,
+    total_tool_errors: totalToolErrors,
+    session_completed: lastMessageType === 'assistant',
+    input_tokens: 0,
     output_tokens: 0,
     cache_creation_input_tokens: 0,
     cache_read_input_tokens: 0,
     first_prompt: firstPrompt,
-    estimated_cost: 0, // Cannot estimate without token counts
+    estimated_cost: 0,
     uses_mcp: false,
     model: model || undefined,
   };
@@ -161,10 +172,14 @@ export class CodexReader implements CodingAgentReader {
     const dailyMap = new Map<string, DailyActivity>();
 
     let totalToolCalls = 0;
+    let totalToolErrors = 0;
     let totalDuration = 0;
+    let completedSessions = 0;
 
     for (const s of sessions) {
       totalDuration += s.duration_minutes;
+      totalToolErrors += s.total_tool_errors;
+      if (s.session_completed) completedSessions++;
       const toolCallCount = Object.values(s.tool_counts).reduce((a, b) => a + b, 0);
       totalToolCalls += toolCallCount;
 
@@ -183,11 +198,15 @@ export class CodexReader implements CodingAgentReader {
     return {
       agent: 'codex',
       totalSessions: sessions.length,
-      totalCost: 0, // Token counts not available
+      totalCost: 0,
       totalCacheSavings: 0,
       totalInputTokens: 0,
       totalOutputTokens: 0,
       totalToolCalls,
+      totalToolErrors,
+      toolSuccessRate: totalToolCalls > 0 ? (totalToolCalls - totalToolErrors) / totalToolCalls : 1,
+      completedSessions,
+      costPerCompletion: 0,
       activeDays: dailyActivity.length,
       avgSessionMinutes: sessions.length > 0 ? totalDuration / sessions.length : 0,
       dailyActivity,

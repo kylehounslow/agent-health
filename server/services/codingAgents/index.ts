@@ -12,6 +12,9 @@ export type {
   CostAnalytics,
   ActivityData,
   ToolsAnalytics,
+  ToolSummary,
   DailyActivity,
+  EfficiencyAnalytics,
+  Insight,
   CodingAgentReader,
 } from './types';

@@ -58,7 +58,6 @@ async function resolveProjectPath(slug: string): Promise<string> {
       }
     } catch { /* next file */ }
   }
-  // Fallback: decode slug
   return slug.replace(/-/g, '/');
 }
 
@@ -75,12 +74,17 @@ async function deriveSessionMeta(
   let userCount = 0;
   let assistantCount = 0;
   const toolCounts: Record<string, number> = {};
+  const toolErrorCounts: Record<string, number> = {};
+  const toolUseIdToName: Record<string, string> = {};
+  let totalToolErrors = 0;
   let inputTokens = 0;
   let outputTokens = 0;
   let cacheRead = 0;
   let cacheWrite = 0;
   let firstPrompt = '';
   let hasMcp = false;
+  let lastMessageType = '';
+  let lastAssistantHasText = false;
 
   try {
     const raw = await fs.readFile(filePath, 'utf-8');
@@ -95,16 +99,27 @@ async function deriveSessionMeta(
         }
         if (obj.type === 'user') {
           userCount++;
+          lastMessageType = 'user';
           const content = obj.message?.content;
           if (typeof content === 'string' && !firstPrompt) {
             firstPrompt = stripXmlTags(content).slice(0, 500);
           } else if (Array.isArray(content)) {
             const text = content.find((c: AnyObj) => c.type === 'text');
             if (text?.text && !firstPrompt) firstPrompt = stripXmlTags(text.text).slice(0, 500);
+            // Check tool_result blocks for errors
+            for (const c of content) {
+              if (c.type === 'tool_result' && c.is_error === true) {
+                const toolName = toolUseIdToName[c.tool_use_id] ?? 'unknown';
+                toolErrorCounts[toolName] = (toolErrorCounts[toolName] ?? 0) + 1;
+                totalToolErrors++;
+              }
+            }
           }
         }
         if (obj.type === 'assistant') {
           assistantCount++;
+          lastMessageType = 'assistant';
+          lastAssistantHasText = false;
           const msg = obj.message;
           if (msg?.usage) {
             inputTokens += msg.usage.input_tokens ?? 0;
@@ -116,7 +131,11 @@ async function deriveSessionMeta(
             for (const c of msg.content) {
               if (c.type === 'tool_use' && c.name) {
                 toolCounts[c.name] = (toolCounts[c.name] ?? 0) + 1;
+                if (c.id) toolUseIdToName[c.id] = c.name;
                 if (c.name.startsWith('mcp__')) hasMcp = true;
+              }
+              if (c.type === 'text' && c.text) {
+                lastAssistantHasText = true;
               }
             }
           }
@@ -132,8 +151,10 @@ async function deriveSessionMeta(
   const start = new Date(startTime).getTime();
   const end = lastTime ? new Date(lastTime).getTime() : start;
   const durationMinutes = (end - start) / 60_000;
-
   const cost = estimateCost('claude-opus-4-6', inputTokens, outputTokens, cacheWrite, cacheRead);
+
+  // Session is completed if the last message was an assistant message with text
+  const sessionCompleted = lastMessageType === 'assistant' && lastAssistantHasText;
 
   return {
     agent: 'claude-code',
@@ -144,6 +165,9 @@ async function deriveSessionMeta(
     user_message_count: userCount,
     assistant_message_count: assistantCount,
     tool_counts: toolCounts,
+    tool_error_counts: toolErrorCounts,
+    total_tool_errors: totalToolErrors,
+    session_completed: sessionCompleted,
     input_tokens: inputTokens,
     output_tokens: outputTokens,
     cache_creation_input_tokens: cacheWrite,
@@ -195,7 +219,9 @@ export class ClaudeCodeReader implements CodingAgentReader {
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
     let totalToolCalls = 0;
+    let totalToolErrors = 0;
     let totalDuration = 0;
+    let completedSessions = 0;
 
     for (const s of sessions) {
       totalCost += s.estimated_cost;
@@ -203,6 +229,8 @@ export class ClaudeCodeReader implements CodingAgentReader {
       totalInputTokens += s.input_tokens;
       totalOutputTokens += s.output_tokens;
       totalDuration += s.duration_minutes;
+      totalToolErrors += s.total_tool_errors;
+      if (s.session_completed) completedSessions++;
       const toolCallCount = Object.values(s.tool_counts).reduce((a, b) => a + b, 0);
       totalToolCalls += toolCallCount;
 
@@ -226,6 +254,10 @@ export class ClaudeCodeReader implements CodingAgentReader {
       totalInputTokens,
       totalOutputTokens,
       totalToolCalls,
+      totalToolErrors,
+      toolSuccessRate: totalToolCalls > 0 ? (totalToolCalls - totalToolErrors) / totalToolCalls : 1,
+      completedSessions,
+      costPerCompletion: completedSessions > 0 ? totalCost / completedSessions : 0,
       activeDays: dailyActivity.length,
       avgSessionMinutes: sessions.length > 0 ? totalDuration / sessions.length : 0,
       dailyActivity,

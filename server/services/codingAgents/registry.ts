@@ -20,8 +20,10 @@ import type {
   ActivityData,
   ToolsAnalytics,
   ToolSummary,
+  EfficiencyAnalytics,
 } from './types';
 import { categorizeTool } from './toolCategories';
+import { generateInsights } from './insights';
 import { ClaudeCodeReader } from './readers/claudeCode';
 import { KiroReader } from './readers/kiro';
 import { CodexReader } from './readers/codex';
@@ -73,12 +75,16 @@ class CodingAgentRegistry {
     }
     const dailyActivity = Array.from(dailyMap.values()).sort((a, b) => a.date.localeCompare(b.date));
 
+    const efficiency = this.computeEfficiency(allStats);
+    const insights = generateInsights(allStats, efficiency);
+
     return {
       agents: allStats,
       dailyActivity,
       totalCost: allStats.reduce((s, a) => s + a.totalCost, 0),
       totalSessions: allStats.reduce((s, a) => s + a.totalSessions, 0),
       totalTokens: allStats.reduce((s, a) => s + a.totalInputTokens + a.totalOutputTokens, 0),
+      insights,
     };
   }
 
@@ -201,30 +207,35 @@ class CodingAgentRegistry {
     };
   }
 
-  /** Get tool usage analytics */
+  /** Get tool usage analytics (with error counts and success rates) */
   async getToolsAnalytics(): Promise<ToolsAnalytics> {
     const sessions = await this.getAllSessions();
 
-    const toolMap = new Map<string, { total: number; sessions: Set<string>; agent: AgentKind }>();
+    const toolMap = new Map<string, { total: number; errors: number; sessions: Set<string>; agent: AgentKind }>();
     for (const s of sessions) {
       for (const [tool, count] of Object.entries(s.tool_counts)) {
         const key = `${s.agent}:${tool}`;
-        const existing = toolMap.get(key) ?? { total: 0, sessions: new Set(), agent: s.agent };
+        const existing = toolMap.get(key) ?? { total: 0, errors: 0, sessions: new Set(), agent: s.agent };
         existing.total += count;
+        existing.errors += s.tool_error_counts[tool] ?? 0;
         existing.sessions.add(s.session_id);
         toolMap.set(key, existing);
       }
     }
 
+    let totalToolErrors = 0;
     const tools: ToolSummary[] = Array.from(toolMap.entries())
       .map(([key, data]) => {
         const name = key.split(':').slice(1).join(':');
+        totalToolErrors += data.errors;
         return {
           agent: data.agent,
           name,
           category: categorizeTool(name),
           total_calls: data.total,
           session_count: data.sessions.size,
+          error_count: data.errors,
+          success_rate: data.total > 0 ? (data.total - data.errors) / data.total : 1,
         };
       })
       .sort((a, b) => b.total_calls - a.total_calls);
@@ -232,6 +243,45 @@ class CodingAgentRegistry {
     return {
       tools,
       total_tool_calls: tools.reduce((s, t) => s + t.total_calls, 0),
+      total_tool_errors: totalToolErrors,
+    };
+  }
+
+  /** Get efficiency analytics for cross-agent comparison */
+  async getEfficiencyAnalytics(): Promise<EfficiencyAnalytics> {
+    const readers = await this.getAvailableReaders();
+    const allStats = await Promise.all(readers.map(r => r.getStats()));
+    return this.computeEfficiency(allStats);
+  }
+
+  /** Internal: compute efficiency from pre-fetched stats */
+  private computeEfficiency(allStats: import('./types').AgentStats[]): EfficiencyAnalytics {
+    const agents = allStats.map(s => ({
+      agent: s.agent,
+      toolSuccessRate: s.toolSuccessRate,
+      completedSessions: s.completedSessions,
+      totalSessions: s.totalSessions,
+      completionRate: s.totalSessions > 0 ? s.completedSessions / s.totalSessions : 0,
+      costPerCompletion: s.costPerCompletion,
+      totalToolErrors: s.totalToolErrors,
+      totalToolCalls: s.totalToolCalls,
+    }));
+
+    const totalCalls = agents.reduce((s, a) => s + a.totalToolCalls, 0);
+    const totalErrors = agents.reduce((s, a) => s + a.totalToolErrors, 0);
+    const totalSessions = agents.reduce((s, a) => s + a.totalSessions, 0);
+    const totalCompleted = agents.reduce((s, a) => s + a.completedSessions, 0);
+    const totalCostForCompleted = allStats
+      .filter(s => s.completedSessions > 0)
+      .reduce((sum, s) => sum + s.totalCost, 0);
+
+    return {
+      agents,
+      combined: {
+        toolSuccessRate: totalCalls > 0 ? (totalCalls - totalErrors) / totalCalls : 1,
+        completionRate: totalSessions > 0 ? totalCompleted / totalSessions : 0,
+        avgCostPerCompletion: totalCompleted > 0 ? totalCostForCompleted / totalCompleted : 0,
+      },
     };
   }
 }

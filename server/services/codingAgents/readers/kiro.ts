@@ -5,7 +5,7 @@
 
 /**
  * Kiro reader — parses ~/.kiro/sessions/cli/ JSONL session files
- * and the SQLite token database when available.
+ * and the companion JSON metadata files for token counts.
  */
 
 import fs from 'fs/promises';
@@ -49,9 +49,13 @@ async function deriveSessionFromJSONL(filePath: string): Promise<AgentSession | 
   let userCount = 0;
   let assistantCount = 0;
   const toolCounts: Record<string, number> = {};
+  const toolErrorCounts: Record<string, number> = {};
+  const toolUseIdToName: Record<string, string> = {};
+  let totalToolErrors = 0;
   let firstPrompt = '';
   let hasMcp = false;
   let projectPath = '';
+  let lastMessageType = '';
 
   try {
     const raw = await fs.readFile(filePath, 'utf-8');
@@ -68,22 +72,44 @@ async function deriveSessionFromJSONL(filePath: string): Promise<AgentSession | 
 
         if (obj.role === 'user') {
           userCount++;
+          lastMessageType = 'user';
           if (typeof obj.content === 'string' && !firstPrompt) {
             firstPrompt = obj.content.slice(0, 500);
           } else if (Array.isArray(obj.content)) {
             const text = obj.content.find((c: AnyObj) => c.type === 'text');
             if (text?.text && !firstPrompt) firstPrompt = text.text.slice(0, 500);
+            // Check for tool result errors
+            for (const c of obj.content) {
+              if ((c.type === 'tool_result' || c.kind === 'ToolResults') && (c.is_error === true || c.isError === true)) {
+                const toolName = toolUseIdToName[c.tool_use_id ?? c.toolUseId] ?? 'unknown';
+                toolErrorCounts[toolName] = (toolErrorCounts[toolName] ?? 0) + 1;
+                totalToolErrors++;
+              }
+            }
           }
         }
         if (obj.role === 'assistant') {
           assistantCount++;
+          lastMessageType = 'assistant';
           if (Array.isArray(obj.content)) {
             for (const c of obj.content) {
               if (c.type === 'tool_use' && c.toolName) {
                 const name = c.serverName ? `mcp_${c.serverName}__${c.toolName}` : c.toolName;
                 toolCounts[name] = (toolCounts[name] ?? 0) + 1;
+                if (c.toolUseId) toolUseIdToName[c.toolUseId] = name;
+                if (c.id) toolUseIdToName[c.id] = name;
                 if (c.serverName) hasMcp = true;
               }
+            }
+          }
+        }
+        // Handle standalone ToolResults blocks
+        if (obj.kind === 'ToolResults' && obj.data?.results) {
+          for (const [id, result] of Object.entries(obj.data.results as Record<string, AnyObj>)) {
+            if (result?.isError === true || (result?.result && !result.result.Success)) {
+              const toolName = toolUseIdToName[id] ?? 'unknown';
+              toolErrorCounts[toolName] = (toolErrorCounts[toolName] ?? 0) + 1;
+              totalToolErrors++;
             }
           }
         }
@@ -95,7 +121,6 @@ async function deriveSessionFromJSONL(filePath: string): Promise<AgentSession | 
 
   if (!startTime) return null;
 
-  // Try to get token counts from the companion .json metadata
   let inputTokens = 0;
   let outputTokens = 0;
   const meta = await readSessionMetaJson(sessionId);
@@ -109,7 +134,6 @@ async function deriveSessionFromJSONL(filePath: string): Promise<AgentSession | 
   const start = new Date(startTime).getTime();
   const end = lastTime ? new Date(lastTime).getTime() : start;
   const durationMinutes = (end - start) / 60_000;
-
   const cost = estimateCost('us.anthropic.claude-sonnet-4-6-v1', inputTokens, outputTokens);
 
   return {
@@ -121,6 +145,9 @@ async function deriveSessionFromJSONL(filePath: string): Promise<AgentSession | 
     user_message_count: userCount,
     assistant_message_count: assistantCount,
     tool_counts: toolCounts,
+    tool_error_counts: toolErrorCounts,
+    total_tool_errors: totalToolErrors,
+    session_completed: lastMessageType === 'assistant',
     input_tokens: inputTokens,
     output_tokens: outputTokens,
     cache_creation_input_tokens: 0,
@@ -162,13 +189,17 @@ export class KiroReader implements CodingAgentReader {
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
     let totalToolCalls = 0;
+    let totalToolErrors = 0;
     let totalDuration = 0;
+    let completedSessions = 0;
 
     for (const s of sessions) {
       totalCost += s.estimated_cost;
       totalInputTokens += s.input_tokens;
       totalOutputTokens += s.output_tokens;
       totalDuration += s.duration_minutes;
+      totalToolErrors += s.total_tool_errors;
+      if (s.session_completed) completedSessions++;
       const toolCallCount = Object.values(s.tool_counts).reduce((a, b) => a + b, 0);
       totalToolCalls += toolCallCount;
 
@@ -192,6 +223,10 @@ export class KiroReader implements CodingAgentReader {
       totalInputTokens,
       totalOutputTokens,
       totalToolCalls,
+      totalToolErrors,
+      toolSuccessRate: totalToolCalls > 0 ? (totalToolCalls - totalToolErrors) / totalToolCalls : 1,
+      completedSessions,
+      costPerCompletion: completedSessions > 0 ? totalCost / completedSessions : 0,
       activeDays: dailyActivity.length,
       avgSessionMinutes: sessions.length > 0 ? totalDuration / sessions.length : 0,
       dailyActivity,

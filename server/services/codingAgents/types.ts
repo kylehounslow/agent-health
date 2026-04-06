@@ -20,6 +20,9 @@ export interface AgentSession {
   user_message_count: number;
   assistant_message_count: number;
   tool_counts: Record<string, number>;
+  tool_error_counts: Record<string, number>;
+  total_tool_errors: number;
+  session_completed: boolean;
   input_tokens: number;
   output_tokens: number;
   cache_creation_input_tokens: number;
@@ -49,6 +52,10 @@ export interface AgentStats {
   totalInputTokens: number;
   totalOutputTokens: number;
   totalToolCalls: number;
+  totalToolErrors: number;
+  toolSuccessRate: number;
+  completedSessions: number;
+  costPerCompletion: number;
   activeDays: number;
   avgSessionMinutes: number;
   dailyActivity: DailyActivity[];
@@ -60,6 +67,37 @@ export interface CombinedStats {
   totalCost: number;
   totalSessions: number;
   totalTokens: number;
+  insights: Insight[];
+}
+
+// ─── Efficiency ─────────────────────────────────────────────────────────────
+
+export interface EfficiencyAnalytics {
+  agents: Array<{
+    agent: AgentKind;
+    toolSuccessRate: number;
+    completedSessions: number;
+    totalSessions: number;
+    completionRate: number;
+    costPerCompletion: number;
+    totalToolErrors: number;
+    totalToolCalls: number;
+  }>;
+  combined: {
+    toolSuccessRate: number;
+    completionRate: number;
+    avgCostPerCompletion: number;
+  };
+}
+
+// ─── Insights ───────────────────────────────────────────────────────────────
+
+export interface Insight {
+  type: 'warning' | 'tip' | 'info' | 'success';
+  title: string;
+  description: string;
+  agent?: AgentKind;
+  linkTab?: string;
 }
 
 // ─── Costs ───────────────────────────────────────────────────────────────────
@@ -109,11 +147,14 @@ export interface ToolSummary {
   category: string;
   total_calls: number;
   session_count: number;
+  error_count: number;
+  success_rate: number;
 }
 
 export interface ToolsAnalytics {
   tools: ToolSummary[];
   total_tool_calls: number;
+  total_tool_errors: number;
 }
 
 // ─── Reader Interface ────────────────────────────────────────────────────────

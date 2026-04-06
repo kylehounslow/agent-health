@@ -108,4 +108,17 @@ router.get('/api/coding-agents/tools', async (_req: Request, res: Response) => {
   }
 });
 
+/**
+ * GET /api/coding-agents/efficiency
+ * Returns per-agent efficiency comparison (tool success, completion, cost/completion).
+ */
+router.get('/api/coding-agents/efficiency', async (_req: Request, res: Response) => {
+  try {
+    const efficiency = await codingAgentRegistry.getEfficiencyAnalytics();
+    res.json(efficiency);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 export default router;
