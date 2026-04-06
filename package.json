@@ -66,6 +66,7 @@
     "build:lib": "esbuild lib/index.ts lib/config/index.ts --bundle --platform=node --format=esm --outdir=lib/dist --packages=external",
     "build:all": "npm run build && npm run build:server && npm run build:cli && npm run build:lib",
     "demo": "npm run build:all && node cli/dist/index.js",
+    "prepare": "npm run build:all",
     "prepublishOnly": "npm run build:all"
   },
   "dependencies": {
