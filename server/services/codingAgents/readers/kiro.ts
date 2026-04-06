@@ -4,16 +4,16 @@
  */
 
 /**
- * Kiro reader — parses ~/.kiro/sessions/cli/ JSONL session files
- * and the companion JSON metadata files for token counts and timestamps.
+ * Kiro reader — supports both Kiro CLI and Kiro IDE session formats.
  *
- * Kiro JSONL uses a versioned format with `kind` discriminator:
- *   - kind: "Prompt"            → user message
- *   - kind: "AssistantMessage"  → assistant response
- *   - kind: "ToolResults"       → tool execution results
+ * **Kiro CLI** (`~/.kiro/sessions/cli/`):
+ *   JSONL files with `kind` discriminator (Prompt, AssistantMessage, ToolResults).
+ *   Companion .json has timestamps and token counts.
  *
- * Timestamps and token counts come from the companion .json metadata file,
- * not from the JSONL itself.
+ * **Kiro IDE** (`~/Library/Application Support/Kiro/User/globalStorage/kiro.kiroagent/`):
+ *   workspace-sessions/<base64-path>/<sessionId>.json — JSON with `history[]`
+ *   of `{message: {role, content}}` entries. Session index in sessions.json.
+ *   Tool calls happen via executionId (out-of-band), not embedded in messages.
  */
 
 import fs from 'fs/promises';
@@ -24,6 +24,19 @@ import { estimateCost } from '../pricing';
 
 const KIRO_DIR = path.join(os.homedir(), '.kiro');
 
+/** Platform-specific Kiro IDE data directory */
+function kiroIdeDataDir(): string {
+  const platform = os.platform();
+  if (platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'Kiro', 'User', 'globalStorage', 'kiro.kiroagent');
+  }
+  if (platform === 'win32') {
+    return path.join(os.homedir(), 'AppData', 'Roaming', 'Kiro', 'User', 'globalStorage', 'kiro.kiroagent');
+  }
+  // Linux / other
+  return path.join(os.homedir(), '.config', 'Kiro', 'User', 'globalStorage', 'kiro.kiroagent');
+}
+
 function kiroPath(...segments: string[]): string {
   return path.join(KIRO_DIR, ...segments);
 }
@@ -31,7 +44,9 @@ function kiroPath(...segments: string[]): string {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyObj = Record<string, any>;
 
-async function listSessionFiles(): Promise<string[]> {
+// ─── CLI session parsing ─────────────────────────────────────────────────────
+
+async function listCliSessionFiles(): Promise<string[]> {
   const dir = kiroPath('sessions', 'cli');
   try {
     const files = await fs.readdir(dir);
@@ -41,7 +56,7 @@ async function listSessionFiles(): Promise<string[]> {
   }
 }
 
-async function readSessionMetaJson(sessionId: string): Promise<AnyObj | null> {
+async function readCliSessionMeta(sessionId: string): Promise<AnyObj | null> {
   try {
     const raw = await fs.readFile(kiroPath('sessions', 'cli', `${sessionId}.json`), 'utf-8');
     return JSON.parse(raw);
@@ -50,7 +65,7 @@ async function readSessionMetaJson(sessionId: string): Promise<AnyObj | null> {
   }
 }
 
-async function deriveSessionFromJSONL(filePath: string): Promise<AgentSession | null> {
+async function deriveCliSession(filePath: string): Promise<AgentSession | null> {
   const sessionId = path.basename(filePath, '.jsonl');
   let userCount = 0;
   let assistantCount = 0;
@@ -72,7 +87,6 @@ async function deriveSessionFromJSONL(filePath: string): Promise<AgentSession | 
         const data = obj.data;
         if (!data) continue;
 
-        // ── User prompt ─────────────────────────────────────────────
         if (kind === 'Prompt') {
           userCount++;
           lastMessageKind = 'Prompt';
@@ -80,25 +94,21 @@ async function deriveSessionFromJSONL(filePath: string): Promise<AgentSession | 
             const textBlock = data.content.find((c: AnyObj) => c.kind === 'text');
             if (textBlock?.data) {
               let promptText = textBlock.data as string;
-              // Skip session naming agent prompts (internal Kiro mechanism)
               if (promptText.startsWith('You are a session naming agent')) {
-                userCount--; // don't count this as a real user message
+                userCount--;
               } else {
-                // Strip session context preamble if present
                 const marker = '[CURRENT USER REQUEST';
                 const idx = promptText.indexOf(marker);
                 if (idx >= 0) {
                   const afterMarker = promptText.indexOf('\n', idx);
                   if (afterMarker >= 0) promptText = promptText.slice(afterMarker + 1).trim();
                 }
-                // Strip trailing options marker
                 const optIdx = promptText.indexOf('\n(If presenting choices');
                 if (optIdx >= 0) promptText = promptText.slice(0, optIdx).trim();
                 if (promptText) firstPrompt = promptText.slice(0, 500);
               }
             }
           }
-          // Check for tool result errors embedded in prompt content
           if (Array.isArray(data.content)) {
             for (const c of data.content) {
               if ((c.kind === 'toolResult' || c.type === 'tool_result') && c.data?.isError === true) {
@@ -110,7 +120,6 @@ async function deriveSessionFromJSONL(filePath: string): Promise<AgentSession | 
           }
         }
 
-        // ── Assistant message ───────────────────────────────────────
         if (kind === 'AssistantMessage') {
           assistantCount++;
           lastMessageKind = 'AssistantMessage';
@@ -130,29 +139,24 @@ async function deriveSessionFromJSONL(filePath: string): Promise<AgentSession | 
           }
         }
 
-        // ── Standalone ToolResults ──────────────────────────────────
         if (kind === 'ToolResults' && data.content) {
           for (const c of (Array.isArray(data.content) ? data.content : [])) {
             if (c.kind === 'toolResult' && c.data) {
-              const rd = c.data;
-              if (rd.isError === true) {
-                const toolName = toolUseIdToName[rd.toolUseId] ?? 'unknown';
+              if (c.data.isError === true) {
+                const toolName = toolUseIdToName[c.data.toolUseId] ?? 'unknown';
                 toolErrorCounts[toolName] = (toolErrorCounts[toolName] ?? 0) + 1;
                 totalToolErrors++;
               }
             }
           }
-          // Also check the results map form — this has richer metadata including serverName
           if (data.results) {
             for (const [id, result] of Object.entries(data.results as Record<string, AnyObj>)) {
-              // Detect MCP server name from the tool metadata
               const toolMeta = result?.tool;
               if (toolMeta?.kind?.Mcp?.serverName) {
                 const serverName = toolMeta.kind.Mcp.serverName;
                 const rawName = toolMeta.kind.Mcp.toolName ?? toolUseIdToName[id];
                 if (rawName && !toolUseIdToName[id]?.startsWith('mcp_')) {
                   const mcpName = `mcp_${serverName}__${rawName}`;
-                  // Remap: subtract from old name, add to mcp name
                   const oldName = toolUseIdToName[id] ?? rawName;
                   if (toolCounts[oldName]) {
                     toolCounts[oldName]--;
@@ -177,8 +181,7 @@ async function deriveSessionFromJSONL(filePath: string): Promise<AgentSession | 
     return null;
   }
 
-  // ── Metadata from companion JSON ────────────────────────────────────────
-  const meta = await readSessionMetaJson(sessionId);
+  const meta = await readCliSessionMeta(sessionId);
   if (!meta) return null;
 
   const startTime = meta.created_at as string;
@@ -196,7 +199,6 @@ async function deriveSessionFromJSONL(filePath: string): Promise<AgentSession | 
       outputTokens += turn.output_token_count ?? 0;
     }
   }
-  // Also check top-level turns array (alternate format)
   if (meta.turns && Array.isArray(meta.turns)) {
     for (const turn of meta.turns) {
       inputTokens += turn.input_token_count ?? 0;
@@ -209,9 +211,6 @@ async function deriveSessionFromJSONL(filePath: string): Promise<AgentSession | 
   const durationMinutes = (end - start) / 60_000;
   const cost = estimateCost('us.anthropic.claude-sonnet-4-6-v1', inputTokens, outputTokens);
 
-  // Check if last assistant message has text content for completion detection
-  const sessionCompleted = lastMessageKind === 'AssistantMessage';
-
   return {
     agent: 'kiro',
     session_id: sessionId,
@@ -223,7 +222,7 @@ async function deriveSessionFromJSONL(filePath: string): Promise<AgentSession | 
     tool_counts: toolCounts,
     tool_error_counts: toolErrorCounts,
     total_tool_errors: totalToolErrors,
-    session_completed: sessionCompleted,
+    session_completed: lastMessageKind === 'AssistantMessage',
     input_tokens: inputTokens,
     output_tokens: outputTokens,
     cache_creation_input_tokens: 0,
@@ -234,13 +233,147 @@ async function deriveSessionFromJSONL(filePath: string): Promise<AgentSession | 
   };
 }
 
+// ─── IDE session parsing ─────────────────────────────────────────────────────
+
+interface IdeSessionIndex {
+  sessionId: string;
+  title: string;
+  dateCreated: string; // epoch millis as string
+  workspaceDirectory: string;
+  hidden?: boolean;
+}
+
+async function listIdeWorkspaces(): Promise<string[]> {
+  const dir = path.join(kiroIdeDataDir(), 'workspace-sessions');
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    return entries.filter(e => e.isDirectory()).map(e => path.join(dir, e.name));
+  } catch {
+    return [];
+  }
+}
+
+async function deriveIdeSession(
+  wsDir: string,
+  index: IdeSessionIndex,
+): Promise<AgentSession | null> {
+  if (index.hidden) return null;
+
+  const filePath = path.join(wsDir, `${index.sessionId}.json`);
+  let data: AnyObj;
+  try {
+    const raw = await fs.readFile(filePath, 'utf-8');
+    data = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+
+  const history: AnyObj[] = data.history ?? [];
+  if (history.length === 0) return null;
+
+  let userCount = 0;
+  let assistantCount = 0;
+  let firstPrompt = '';
+  let lastRole = '';
+
+  for (const entry of history) {
+    const msg = entry.message;
+    if (!msg) continue;
+    const role = msg.role as string;
+
+    if (role === 'user') {
+      userCount++;
+      lastRole = 'user';
+      if (!firstPrompt) {
+        const content = msg.content;
+        if (typeof content === 'string') {
+          firstPrompt = content.slice(0, 500);
+        } else if (Array.isArray(content)) {
+          const text = content.find((c: AnyObj) => c.type === 'text');
+          if (text?.text) firstPrompt = text.text.slice(0, 500);
+        }
+      }
+    }
+    if (role === 'assistant') {
+      assistantCount++;
+      lastRole = 'assistant';
+    }
+  }
+
+  // dateCreated is epoch millis as string
+  const epochMs = parseInt(index.dateCreated, 10);
+  if (isNaN(epochMs)) return null;
+  const startTime = new Date(epochMs).toISOString();
+
+  const projectPath = (data.workspaceDirectory as string)
+    || (data.workspacePath as string)
+    || index.workspaceDirectory
+    || 'unknown';
+
+  const model = (data.selectedModel as string) || undefined;
+  const sessionType = data.sessionType as string | undefined;
+  const title = (data.title as string) || index.title || '';
+
+  // Use session title as prompt fallback for spec/task sessions
+  if (!firstPrompt && title) {
+    firstPrompt = title.slice(0, 500);
+  }
+
+  return {
+    agent: 'kiro',
+    session_id: index.sessionId,
+    project_path: projectPath,
+    start_time: startTime,
+    duration_minutes: 0, // IDE doesn't provide end time
+    user_message_count: userCount,
+    assistant_message_count: assistantCount,
+    tool_counts: {}, // Tool calls happen out-of-band via executionId
+    tool_error_counts: {},
+    total_tool_errors: 0,
+    session_completed: lastRole === 'assistant',
+    input_tokens: 0, // Not tracked per-session in IDE
+    output_tokens: 0,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0,
+    first_prompt: firstPrompt,
+    estimated_cost: 0,
+    uses_mcp: false,
+    model: model || (sessionType ? `kiro-ide (${sessionType})` : undefined),
+  };
+}
+
+async function listIdeSessions(): Promise<AgentSession[]> {
+  const workspaces = await listIdeWorkspaces();
+  const results: AgentSession[] = [];
+
+  for (const wsDir of workspaces) {
+    try {
+      const raw = await fs.readFile(path.join(wsDir, 'sessions.json'), 'utf-8');
+      const indices: IdeSessionIndex[] = JSON.parse(raw);
+      for (const idx of indices) {
+        const session = await deriveIdeSession(wsDir, idx);
+        if (session) results.push(session);
+      }
+    } catch { /* skip */ }
+  }
+
+  return results;
+}
+
+// ─── Combined reader ─────────────────────────────────────────────────────────
+
 export class KiroReader implements CodingAgentReader {
   readonly agentName = 'kiro' as const;
   readonly displayName = 'Kiro';
 
   async isAvailable(): Promise<boolean> {
+    // Available if either CLI sessions or IDE sessions exist
     try {
       await fs.access(kiroPath('sessions', 'cli'));
+      return true;
+    } catch { /* try IDE */ }
+    try {
+      await fs.access(path.join(kiroIdeDataDir(), 'workspace-sessions'));
       return true;
     } catch {
       return false;
@@ -248,13 +381,29 @@ export class KiroReader implements CodingAgentReader {
   }
 
   async getSessions(): Promise<AgentSession[]> {
-    const files = await listSessionFiles();
-    const results: AgentSession[] = [];
-    for (const f of files) {
-      const session = await deriveSessionFromJSONL(f);
+    const [cliFiles, ideSessions] = await Promise.all([
+      listCliSessionFiles(),
+      listIdeSessions(),
+    ]);
+
+    const results: AgentSession[] = [...ideSessions];
+
+    for (const f of cliFiles) {
+      const session = await deriveCliSession(f);
       if (session) results.push(session);
     }
-    return results.sort((a, b) => new Date(b.start_time).getTime() - new Date(a.start_time).getTime());
+
+    // Deduplicate by session_id (in case CLI and IDE share sessions)
+    const seen = new Set<string>();
+    const deduped: AgentSession[] = [];
+    for (const s of results) {
+      if (!seen.has(s.session_id)) {
+        seen.add(s.session_id);
+        deduped.push(s);
+      }
+    }
+
+    return deduped.sort((a, b) => new Date(b.start_time).getTime() - new Date(a.start_time).getTime());
   }
 
   async getStats(): Promise<AgentStats> {
