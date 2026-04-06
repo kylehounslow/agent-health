@@ -24,8 +24,18 @@ import type {
   ToolsAnalytics,
   ToolSummary,
   EfficiencyAnalytics,
+  SessionDetail,
+  ProjectAnalytics,
+  AdvancedAnalytics,
+  McpAnalytics,
+  McpServerSummary,
+  HourlyEffectiveness,
+  DurationBucket,
+  ConversationDepthStats,
+  FailurePattern,
+  ExportData,
 } from './types';
-import { categorizeTool } from './toolCategories';
+import { categorizeTool, isMcpTool, parseMcpTool } from './toolCategories';
 import { generateInsights } from './insights';
 import { ClaudeCodeReader } from './readers/claudeCode';
 import { KiroReader } from './readers/kiro';
@@ -166,7 +176,13 @@ class CodingAgentRegistry {
     }
 
     const efficiency = this.computeEfficiency(allStats);
-    const insights = generateInsights(allStats, efficiency, wastedCost, abandonedSessions);
+    const advanced: AdvancedAnalytics = {
+      mcp: this.computeMcpAnalytics(sessions),
+      hourly_effectiveness: this.computeHourlyEffectiveness(sessions),
+      duration_distribution: this.computeDurationDistribution(sessions),
+      conversation_depth: this.computeConversationDepth(sessions),
+    };
+    const insights = generateInsights(allStats, efficiency, wastedCost, abandonedSessions, advanced);
 
     return {
       agents: allStats,
@@ -396,6 +412,284 @@ class CodingAgentRegistry {
         completionRate: totalSessions > 0 ? totalCompleted / totalSessions : 0,
         avgCostPerCompletion: totalCompleted > 0 ? totalCostForCompleted / totalCompleted : 0,
       },
+    };
+  }
+
+  // ─── Phase 2: Session Detail ────────────────────────────────────────────────
+
+  /** Get detail for a specific session (conversation messages) */
+  async getSessionDetail(agent: AgentKind, sessionId: string): Promise<SessionDetail | null> {
+    const reader = this.getReader(agent);
+    if (!reader?.getSessionDetail) return null;
+    return reader.getSessionDetail(sessionId);
+  }
+
+  // ─── Phase 2: Project Analytics ─────────────────────────────────────────────
+
+  /** Get per-project analytics across all agents */
+  async getProjectAnalytics(range?: DateRange): Promise<ProjectAnalytics[]> {
+    const sessions = await this.getAllSessions(range);
+
+    const projectMap = new Map<string, {
+      agents: Set<AgentKind>;
+      sessions: AgentSession[];
+    }>();
+
+    for (const s of sessions) {
+      const key = s.project_path;
+      const entry = projectMap.get(key) ?? { agents: new Set(), sessions: [] };
+      entry.agents.add(s.agent);
+      entry.sessions.push(s);
+      projectMap.set(key, entry);
+    }
+
+    return Array.from(projectMap.entries())
+      .map(([projectPath, data]) => {
+        const completed = data.sessions.filter(s => s.session_completed).length;
+        const totalCost = data.sessions.reduce((s, sess) => s + sess.estimated_cost, 0);
+        const wastedCost = data.sessions
+          .filter(s => !s.session_completed)
+          .reduce((s, sess) => s + sess.estimated_cost, 0);
+        const totalToolCalls = data.sessions.reduce((s, sess) =>
+          s + Object.values(sess.tool_counts).reduce((a, b) => a + b, 0), 0);
+        const totalToolErrors = data.sessions.reduce((s, sess) => s + sess.total_tool_errors, 0);
+        const totalDuration = data.sessions.reduce((s, sess) => s + sess.duration_minutes, 0);
+
+        // Daily cost for this project
+        const dailyCostMap = new Map<string, DailyCost>();
+        for (const s of data.sessions) {
+          const date = s.start_time.slice(0, 10);
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+          const key = `${date}:${s.agent}`;
+          const existing = dailyCostMap.get(key) ?? { date, cost: 0, agent: s.agent };
+          existing.cost += s.estimated_cost;
+          dailyCostMap.set(key, existing);
+        }
+
+        return {
+          project_path: projectPath,
+          display_name: projectPath.split('/').pop() || projectPath,
+          agents: [...data.agents],
+          total_sessions: data.sessions.length,
+          completed_sessions: completed,
+          completion_rate: data.sessions.length > 0 ? completed / data.sessions.length : 0,
+          total_cost: totalCost,
+          wasted_cost: wastedCost,
+          total_tool_calls: totalToolCalls,
+          total_tool_errors: totalToolErrors,
+          avg_session_minutes: data.sessions.length > 0 ? totalDuration / data.sessions.length : 0,
+          daily_costs: Array.from(dailyCostMap.values()).sort((a, b) => a.date.localeCompare(b.date)),
+        };
+      })
+      .sort((a, b) => b.total_sessions - a.total_sessions);
+  }
+
+  // ─── Phase 3: Advanced Analytics ────────────────────────────────────────────
+
+  /** Get MCP server-level analytics */
+  private computeMcpAnalytics(sessions: AgentSession[]): McpAnalytics {
+    const serverMap = new Map<string, {
+      agent: AgentKind;
+      tools: Map<string, { calls: number; errors: number }>;
+      sessions: Set<string>;
+    }>();
+
+    for (const s of sessions) {
+      for (const [toolName, count] of Object.entries(s.tool_counts)) {
+        if (!isMcpTool(toolName)) continue;
+        const parsed = parseMcpTool(toolName);
+        if (!parsed) continue;
+
+        const key = `${s.agent}:${parsed.server}`;
+        const entry = serverMap.get(key) ?? {
+          agent: s.agent,
+          tools: new Map(),
+          sessions: new Set(),
+        };
+        const tool = entry.tools.get(parsed.tool) ?? { calls: 0, errors: 0 };
+        tool.calls += count;
+        tool.errors += s.tool_error_counts[toolName] ?? 0;
+        entry.tools.set(parsed.tool, tool);
+        entry.sessions.add(s.session_id);
+        serverMap.set(key, entry);
+      }
+    }
+
+    let totalCalls = 0;
+    let totalErrors = 0;
+    const servers: McpServerSummary[] = Array.from(serverMap.entries()).map(([key, data]) => {
+      const server = key.split(':').slice(1).join(':');
+      const tools = Array.from(data.tools.entries()).map(([name, t]) => ({
+        name, calls: t.calls, errors: t.errors,
+      })).sort((a, b) => b.calls - a.calls);
+      const serverCalls = tools.reduce((s, t) => s + t.calls, 0);
+      const serverErrors = tools.reduce((s, t) => s + t.errors, 0);
+      totalCalls += serverCalls;
+      totalErrors += serverErrors;
+      return {
+        server,
+        agent: data.agent,
+        total_calls: serverCalls,
+        error_count: serverErrors,
+        success_rate: serverCalls > 0 ? (serverCalls - serverErrors) / serverCalls : 1,
+        tools,
+        session_count: data.sessions.size,
+      };
+    }).sort((a, b) => b.total_calls - a.total_calls);
+
+    return { servers, total_mcp_calls: totalCalls, total_mcp_errors: totalErrors };
+  }
+
+  /** Hourly effectiveness: completion rate and cost by hour of day */
+  private computeHourlyEffectiveness(sessions: AgentSession[]): HourlyEffectiveness[] {
+    const hours: Array<{ total: number; completed: number; totalCost: number }> =
+      Array.from({ length: 24 }, () => ({ total: 0, completed: 0, totalCost: 0 }));
+
+    for (const s of sessions) {
+      const d = new Date(s.start_time);
+      if (isNaN(d.getTime())) continue;
+      const h = d.getHours();
+      hours[h].total++;
+      if (s.session_completed) hours[h].completed++;
+      hours[h].totalCost += s.estimated_cost;
+    }
+
+    return hours.map((data, hour) => ({
+      hour,
+      total_sessions: data.total,
+      completed_sessions: data.completed,
+      completion_rate: data.total > 0 ? data.completed / data.total : 0,
+      avg_cost: data.total > 0 ? data.totalCost / data.total : 0,
+    }));
+  }
+
+  /** Session duration distribution */
+  private computeDurationDistribution(sessions: AgentSession[]): DurationBucket[] {
+    const buckets: Array<{ label: string; min: number; max: number; sessions: AgentSession[] }> = [
+      { label: '<5m', min: 0, max: 5, sessions: [] },
+      { label: '5-15m', min: 5, max: 15, sessions: [] },
+      { label: '15-30m', min: 15, max: 30, sessions: [] },
+      { label: '30-60m', min: 30, max: 60, sessions: [] },
+      { label: '60m+', min: 60, max: Infinity, sessions: [] },
+    ];
+
+    for (const s of sessions) {
+      const d = s.duration_minutes;
+      const bucket = buckets.find(b => d >= b.min && d < b.max) ?? buckets[buckets.length - 1];
+      bucket.sessions.push(s);
+    }
+
+    return buckets.map(b => {
+      const completed = b.sessions.filter(s => s.session_completed).length;
+      const totalCost = b.sessions.reduce((s, sess) => s + sess.estimated_cost, 0);
+      return {
+        label: b.label,
+        min_minutes: b.min,
+        max_minutes: b.max === Infinity ? 999 : b.max,
+        session_count: b.sessions.length,
+        completed_count: completed,
+        completion_rate: b.sessions.length > 0 ? completed / b.sessions.length : 0,
+        avg_cost: b.sessions.length > 0 ? totalCost / b.sessions.length : 0,
+        total_cost: totalCost,
+      };
+    });
+  }
+
+  /** Conversation depth (back-and-forth intensity) */
+  private computeConversationDepth(sessions: AgentSession[]): ConversationDepthStats {
+    const depths: Array<{ depth: number; completed: boolean; cost: number }> = [];
+    for (const s of sessions) {
+      if (s.user_message_count === 0) continue;
+      depths.push({
+        depth: s.user_message_count,
+        completed: s.session_completed,
+        cost: s.estimated_cost,
+      });
+    }
+
+    const avgDepth = depths.length > 0 ? depths.reduce((s, d) => s + d.depth, 0) / depths.length : 0;
+    const high = depths.filter(d => d.depth >= 5);
+    const low = depths.filter(d => d.depth < 5);
+
+    const depthBuckets = [
+      { label: '1-2 turns', min: 1, max: 3 },
+      { label: '3-5 turns', min: 3, max: 6 },
+      { label: '6-10 turns', min: 6, max: 11 },
+      { label: '10+ turns', min: 11, max: Infinity },
+    ].map(b => {
+      const inBucket = depths.filter(d => d.depth >= b.min && d.depth < b.max);
+      const completed = inBucket.filter(d => d.completed).length;
+      const totalCost = inBucket.reduce((s, d) => s + d.cost, 0);
+      return {
+        label: b.label,
+        session_count: inBucket.length,
+        completion_rate: inBucket.length > 0 ? completed / inBucket.length : 0,
+        avg_cost: inBucket.length > 0 ? totalCost / inBucket.length : 0,
+      };
+    });
+
+    return {
+      avg_depth: avgDepth,
+      high_backforth_sessions: high.length,
+      high_backforth_completion_rate: high.length > 0 ? high.filter(d => d.completed).length / high.length : 0,
+      low_backforth_completion_rate: low.length > 0 ? low.filter(d => d.completed).length / low.length : 0,
+      depth_buckets: depthBuckets,
+    };
+  }
+
+  /** Get all Phase 3 advanced analytics in one call */
+  async getAdvancedAnalytics(range?: DateRange): Promise<AdvancedAnalytics> {
+    const sessions = await this.getAllSessions(range);
+    return {
+      mcp: this.computeMcpAnalytics(sessions),
+      hourly_effectiveness: this.computeHourlyEffectiveness(sessions),
+      duration_distribution: this.computeDurationDistribution(sessions),
+      conversation_depth: this.computeConversationDepth(sessions),
+    };
+  }
+
+  // ─── Phase 4: Failure Patterns ──────────────────────────────────────────────
+
+  /** Detect recurring tool failure patterns */
+  async getFailurePatterns(range?: DateRange): Promise<FailurePattern[]> {
+    const sessions = await this.getAllSessions(range);
+    const patternMap = new Map<string, { tool: string; agent: AgentKind; occurrences: number; sessions: Set<string> }>();
+
+    for (const s of sessions) {
+      for (const [tool, errorCount] of Object.entries(s.tool_error_counts)) {
+        if (errorCount === 0) continue;
+        const key = `${s.agent}:${tool}`;
+        const entry = patternMap.get(key) ?? { tool, agent: s.agent, occurrences: 0, sessions: new Set() };
+        entry.occurrences += errorCount;
+        entry.sessions.add(s.session_id);
+        patternMap.set(key, entry);
+      }
+    }
+
+    return Array.from(patternMap.values())
+      .filter(p => p.occurrences >= 2)
+      .map(p => ({
+        tool: p.tool,
+        error_snippet: `${p.tool} failed ${p.occurrences} times across ${p.sessions.size} sessions`,
+        occurrences: p.occurrences,
+        sessions: p.sessions.size,
+        agent: p.agent,
+      }))
+      .sort((a, b) => b.occurrences - a.occurrences)
+      .slice(0, 20);
+  }
+
+  // ─── Phase 4: Export ────────────────────────────────────────────────────────
+
+  /** Export all data for a given range */
+  async exportData(range?: DateRange): Promise<ExportData> {
+    const sessions = await this.getAllSessions(range);
+    const stats = await this.getCombinedStats(range);
+    return {
+      exported_at: new Date().toISOString(),
+      range,
+      sessions,
+      stats,
     };
   }
 }

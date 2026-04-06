@@ -172,6 +172,122 @@ export interface ToolsAnalytics {
   total_tool_errors: number;
 }
 
+// ─── Session Detail (Phase 2) ───────────────────────────────────────────────
+
+export interface SessionMessage {
+  role: 'user' | 'assistant' | 'tool_result';
+  text: string;
+  timestamp?: string;
+  toolName?: string;
+  isError?: boolean;
+}
+
+export interface SessionDetail {
+  session: AgentSession;
+  messages: SessionMessage[];
+}
+
+// ─── Project Analytics (Phase 2) ────────────────────────────────────────────
+
+export interface ProjectAnalytics {
+  project_path: string;
+  display_name: string;
+  agents: AgentKind[];
+  total_sessions: number;
+  completed_sessions: number;
+  completion_rate: number;
+  total_cost: number;
+  wasted_cost: number;
+  total_tool_calls: number;
+  total_tool_errors: number;
+  avg_session_minutes: number;
+  daily_costs: DailyCost[];
+}
+
+// ─── MCP Analytics (Phase 3) ────────────────────────────────────────────────
+
+export interface McpServerSummary {
+  server: string;
+  agent: AgentKind;
+  total_calls: number;
+  error_count: number;
+  success_rate: number;
+  tools: Array<{ name: string; calls: number; errors: number }>;
+  session_count: number;
+}
+
+export interface McpAnalytics {
+  servers: McpServerSummary[];
+  total_mcp_calls: number;
+  total_mcp_errors: number;
+}
+
+// ─── Peak Productivity (Phase 3) ────────────────────────────────────────────
+
+export interface HourlyEffectiveness {
+  hour: number;
+  total_sessions: number;
+  completed_sessions: number;
+  completion_rate: number;
+  avg_cost: number;
+}
+
+// ─── Duration Distribution (Phase 3) ────────────────────────────────────────
+
+export interface DurationBucket {
+  label: string;
+  min_minutes: number;
+  max_minutes: number;
+  session_count: number;
+  completed_count: number;
+  completion_rate: number;
+  avg_cost: number;
+  total_cost: number;
+}
+
+// ─── Conversation Depth (Phase 3) ───────────────────────────────────────────
+
+export interface ConversationDepthStats {
+  avg_depth: number;
+  high_backforth_sessions: number;
+  high_backforth_completion_rate: number;
+  low_backforth_completion_rate: number;
+  depth_buckets: Array<{
+    label: string;
+    session_count: number;
+    completion_rate: number;
+    avg_cost: number;
+  }>;
+}
+
+// ─── Advanced Analytics (Phase 3 combined response) ─────────────────────────
+
+export interface AdvancedAnalytics {
+  mcp: McpAnalytics;
+  hourly_effectiveness: HourlyEffectiveness[];
+  duration_distribution: DurationBucket[];
+  conversation_depth: ConversationDepthStats;
+}
+
+// ─── Failure Patterns (Phase 4) ─────────────────────────────────────────────
+
+export interface FailurePattern {
+  tool: string;
+  error_snippet: string;
+  occurrences: number;
+  sessions: number;
+  agent: AgentKind;
+}
+
+// ─── Export (Phase 4) ───────────────────────────────────────────────────────
+
+export interface ExportData {
+  exported_at: string;
+  range?: DateRange;
+  sessions: AgentSession[];
+  stats: CombinedStats;
+}
+
 // ─── Reader Interface ────────────────────────────────────────────────────────
 
 export interface CodingAgentReader {
@@ -180,4 +296,5 @@ export interface CodingAgentReader {
   isAvailable(): Promise<boolean>;
   getSessions(): Promise<AgentSession[]>;
   getStats(): Promise<AgentStats>;
+  getSessionDetail?(sessionId: string): Promise<SessionDetail | null>;
 }

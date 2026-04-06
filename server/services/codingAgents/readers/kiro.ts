@@ -19,7 +19,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import type { CodingAgentReader, AgentSession, AgentStats, DailyActivity } from '../types';
+import type { CodingAgentReader, AgentSession, AgentStats, DailyActivity, SessionDetail, SessionMessage } from '../types';
 import { estimateCost } from '../pricing';
 
 const KIRO_DIR = path.join(os.homedir(), '.kiro');
@@ -456,5 +456,102 @@ export class KiroReader implements CodingAgentReader {
       avgSessionMinutes: sessions.length > 0 ? totalDuration / sessions.length : 0,
       dailyActivity,
     };
+  }
+
+  async getSessionDetail(sessionId: string): Promise<SessionDetail | null> {
+    // Try CLI first
+    const cliPath = kiroPath('sessions', 'cli', `${sessionId}.jsonl`);
+    try {
+      await fs.access(cliPath);
+      const session = await deriveCliSession(cliPath);
+      if (session) {
+        const messages: SessionMessage[] = [];
+        const raw = await fs.readFile(cliPath, 'utf-8');
+        const lines = raw.split(/\r?\n/).filter(Boolean);
+        for (const line of lines) {
+          try {
+            const obj: AnyObj = JSON.parse(line);
+            const kind = obj.kind as string;
+            const data = obj.data;
+            if (!data) continue;
+            if (kind === 'Prompt' && Array.isArray(data.content)) {
+              const textBlock = data.content.find((c: AnyObj) => c.kind === 'text');
+              if (textBlock?.data) {
+                messages.push({ role: 'user', text: (textBlock.data as string).slice(0, 5000) });
+              }
+            }
+            if (kind === 'AssistantMessage' && Array.isArray(data.content)) {
+              for (const c of data.content) {
+                if (c.kind === 'text' && c.data) {
+                  messages.push({ role: 'assistant', text: (c.data as string).slice(0, 5000) });
+                }
+                if (c.kind === 'toolUse' && c.data) {
+                  messages.push({
+                    role: 'assistant',
+                    text: `Tool: ${c.data.name}\n${JSON.stringify(c.data.input ?? {}, null, 2).slice(0, 2000)}`,
+                    toolName: c.data.name,
+                  });
+                }
+              }
+            }
+            if (kind === 'ToolResults' && Array.isArray(data.content)) {
+              for (const c of data.content) {
+                if (c.kind === 'toolResult' && c.data) {
+                  const content = Array.isArray(c.data.content)
+                    ? c.data.content.map((x: AnyObj) => x.text ?? '').join('\n')
+                    : String(c.data.content ?? '');
+                  messages.push({
+                    role: 'tool_result',
+                    text: content.slice(0, 2000),
+                    isError: c.data.isError === true,
+                  });
+                }
+              }
+            }
+          } catch { /* skip */ }
+        }
+        return { session, messages };
+      }
+    } catch { /* try IDE */ }
+
+    // Try IDE
+    const workspaces = await listIdeWorkspaces();
+    for (const wsDir of workspaces) {
+      const filePath = path.join(wsDir, `${sessionId}.json`);
+      try {
+        const raw = await fs.readFile(filePath, 'utf-8');
+        const data: AnyObj = JSON.parse(raw);
+        const history: AnyObj[] = data.history ?? [];
+        const messages: SessionMessage[] = [];
+
+        for (const entry of history) {
+          const msg = entry.message;
+          if (!msg) continue;
+          const role = msg.role === 'user' ? 'user' as const : 'assistant' as const;
+          let text = '';
+          if (typeof msg.content === 'string') {
+            text = msg.content;
+          } else if (Array.isArray(msg.content)) {
+            text = msg.content
+              .filter((c: AnyObj) => c.type === 'text')
+              .map((c: AnyObj) => c.text ?? '')
+              .join('\n');
+          }
+          if (text.trim()) messages.push({ role, text: text.slice(0, 5000) });
+        }
+
+        // We need the session metadata — build it from IDE index
+        const indexPath = path.join(wsDir, 'sessions.json');
+        const indexRaw = await fs.readFile(indexPath, 'utf-8');
+        const indices: IdeSessionIndex[] = JSON.parse(indexRaw);
+        const idx = indices.find(i => i.sessionId === sessionId);
+        if (idx) {
+          const session = await deriveIdeSession(wsDir, idx);
+          if (session) return { session, messages };
+        }
+      } catch { /* skip */ }
+    }
+
+    return null;
   }
 }

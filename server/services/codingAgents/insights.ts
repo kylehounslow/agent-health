@@ -8,7 +8,7 @@
  * to produce a prioritised list of actionable insights for the dashboard.
  */
 
-import type { AgentStats, EfficiencyAnalytics, Insight } from './types';
+import type { AgentStats, EfficiencyAnalytics, Insight, AdvancedAnalytics } from './types';
 
 const AGENT_LABELS: Record<string, string> = {
   'claude-code': 'Claude Code',
@@ -34,6 +34,7 @@ export function generateInsights(
   efficiency: EfficiencyAnalytics,
   wastedCost?: number,
   abandonedSessions?: number,
+  advanced?: AdvancedAnalytics,
 ): Insight[] {
   const insights: Insight[] = [];
 
@@ -179,9 +180,70 @@ export function generateInsights(
     });
   }
 
-  // ── Prioritise and cap at 5 ──────────────────────────────────────────────
+  // ── Advanced insights (Phase 3) ──────────────────────────────────────────
+
+  if (advanced) {
+    // MCP server error rate
+    for (const server of advanced.mcp.servers) {
+      if (server.total_calls >= 5 && server.success_rate < 0.85) {
+        insights.push({
+          type: 'warning',
+          title: `MCP server "${server.server}" has ${pct(1 - server.success_rate)} error rate`,
+          description: `${server.error_count} errors across ${server.total_calls} calls. Check server configuration.`,
+          agent: server.agent,
+          linkTab: 'tools',
+        });
+      }
+    }
+
+    // Peak productivity hours
+    const effective = advanced.hourly_effectiveness.filter(h => h.total_sessions >= 3);
+    if (effective.length > 0) {
+      const bestHour = effective.reduce((a, b) => a.completion_rate > b.completion_rate ? a : b);
+      const worstHour = effective.reduce((a, b) => a.completion_rate < b.completion_rate ? a : b);
+      if (bestHour.completion_rate - worstHour.completion_rate > 0.2) {
+        insights.push({
+          type: 'tip',
+          title: `Sessions at ${bestHour.hour}:00 complete ${pct(bestHour.completion_rate)} vs ${pct(worstHour.completion_rate)} at ${worstHour.hour}:00`,
+          description: 'Schedule complex agent tasks during your most productive hours.',
+          linkTab: 'activity',
+        });
+      }
+    }
+
+    // Conversation depth
+    const depth = advanced.conversation_depth;
+    if (depth.high_backforth_sessions >= 3 && depth.high_backforth_completion_rate < depth.low_backforth_completion_rate - 0.15) {
+      insights.push({
+        type: 'tip',
+        title: `Sessions with 5+ turns only complete ${pct(depth.high_backforth_completion_rate)} of the time`,
+        description: `Simpler sessions complete at ${pct(depth.low_backforth_completion_rate)}. Break complex tasks into smaller prompts.`,
+        linkTab: 'sessions',
+      });
+    }
+
+    // Duration distribution
+    const longBuckets = advanced.duration_distribution.filter(b => b.min_minutes >= 30 && b.session_count >= 2);
+    const shortBuckets = advanced.duration_distribution.filter(b => b.max_minutes <= 15 && b.session_count >= 2);
+    if (longBuckets.length > 0 && shortBuckets.length > 0) {
+      const longRate = longBuckets.reduce((s, b) => s + b.completed_count, 0) / longBuckets.reduce((s, b) => s + b.session_count, 0);
+      const shortRate = shortBuckets.reduce((s, b) => s + b.completed_count, 0) / shortBuckets.reduce((s, b) => s + b.session_count, 0);
+      const longAvgCost = longBuckets.reduce((s, b) => s + b.total_cost, 0) / longBuckets.reduce((s, b) => s + b.session_count, 0);
+      const shortAvgCost = shortBuckets.reduce((s, b) => s + b.total_cost, 0) / shortBuckets.reduce((s, b) => s + b.session_count, 0);
+      if (longAvgCost > shortAvgCost * 3 && longRate < shortRate - 0.1) {
+        insights.push({
+          type: 'tip',
+          title: `Sessions >30m cost ${cost(longAvgCost)} avg but only complete ${pct(longRate)}`,
+          description: `Short sessions (<15m) average ${cost(shortAvgCost)} with ${pct(shortRate)} completion. Consider shorter, focused sessions.`,
+          linkTab: 'sessions',
+        });
+      }
+    }
+  }
+
+  // ── Prioritise and cap at 8 ──────────────────────────────────────────────
 
   const priority: Record<Insight['type'], number> = { warning: 0, tip: 1, info: 2, success: 3 };
   insights.sort((a, b) => priority[a.type] - priority[b.type]);
-  return insights.slice(0, 5);
+  return insights.slice(0, 8);
 }

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { ENV_CONFIG } from '@/lib/config';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip,
@@ -130,6 +130,83 @@ interface EfficiencyData {
     completionRate: number;
     avgCostPerCompletion: number;
   };
+}
+// Phase 2
+interface SessionMessage {
+  role: 'user' | 'assistant' | 'tool_result';
+  text: string;
+  timestamp?: string;
+  toolName?: string;
+  isError?: boolean;
+}
+interface SessionDetail {
+  session: Session;
+  messages: SessionMessage[];
+}
+interface ProjectAnalytics {
+  project_path: string;
+  display_name: string;
+  agents: string[];
+  total_sessions: number;
+  completed_sessions: number;
+  completion_rate: number;
+  total_cost: number;
+  wasted_cost: number;
+  total_tool_calls: number;
+  total_tool_errors: number;
+  avg_session_minutes: number;
+}
+interface SessionsResponse {
+  sessions: Session[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+// Phase 3
+interface McpServerSummary {
+  server: string;
+  agent: string;
+  total_calls: number;
+  error_count: number;
+  success_rate: number;
+  tools: Array<{ name: string; calls: number; errors: number }>;
+  session_count: number;
+}
+interface HourlyEffectiveness {
+  hour: number;
+  total_sessions: number;
+  completed_sessions: number;
+  completion_rate: number;
+  avg_cost: number;
+}
+interface DurationBucket {
+  label: string;
+  session_count: number;
+  completed_count: number;
+  completion_rate: number;
+  avg_cost: number;
+  total_cost: number;
+}
+interface ConversationDepthStats {
+  avg_depth: number;
+  high_backforth_sessions: number;
+  high_backforth_completion_rate: number;
+  low_backforth_completion_rate: number;
+  depth_buckets: Array<{ label: string; session_count: number; completion_rate: number; avg_cost: number }>;
+}
+interface AdvancedAnalytics {
+  mcp: { servers: McpServerSummary[]; total_mcp_calls: number; total_mcp_errors: number };
+  hourly_effectiveness: HourlyEffectiveness[];
+  duration_distribution: DurationBucket[];
+  conversation_depth: ConversationDepthStats;
+}
+// Phase 4
+interface FailurePattern {
+  tool: string;
+  error_snippet: string;
+  occurrences: number;
+  sessions: number;
+  agent: string;
 }
 
 // ─── Formatters ──────────────────────────────────────────────────────────────
@@ -388,76 +465,202 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset }: { stats: Combi
   );
 }
 
+// ─── Session Detail Panel ────────────────────────────────────────────────────
+
+function SessionDetailPanel({ session, onClose }: { session: Session; onClose: () => void }) {
+  const [detail, setDetail] = useState<SessionDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    fetchJson<SessionDetail>(`/api/coding-agents/sessions/${session.agent}/${session.session_id}`)
+      .then(d => setDetail(d))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [session.agent, session.session_id]);
+
+  return (
+    <div className="fixed inset-y-0 right-0 w-full max-w-2xl bg-background border-l shadow-xl z-50 overflow-y-auto">
+      <div className="sticky top-0 bg-background border-b p-4 flex items-center justify-between">
+        <div>
+          <h3 className="font-semibold text-sm">Session Detail</h3>
+          <p className="text-xs text-muted-foreground">
+            {AGENT_LABELS[session.agent] ?? session.agent} &middot; {new Date(session.start_time).toLocaleString()} &middot; {formatDuration(session.duration_minutes)}
+            {session.estimated_cost > 0 && ` \u00b7 ${formatCost(session.estimated_cost)}`}
+          </p>
+        </div>
+        <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-lg px-2">&times;</button>
+      </div>
+
+      <div className="p-4 space-y-2">
+        {/* Session metadata */}
+        <div className="grid grid-cols-2 gap-2 text-sm mb-4">
+          <div><span className="text-muted-foreground">Project:</span> {session.project_path.split('/').pop()}</div>
+          <div><span className="text-muted-foreground">Status:</span> {session.session_completed ?
+            <span className="text-green-600">Completed</span> :
+            <span className="text-amber-600">Abandoned</span>}
+          </div>
+          <div><span className="text-muted-foreground">Messages:</span> {session.user_message_count + session.assistant_message_count}</div>
+          <div><span className="text-muted-foreground">Tokens:</span> {formatTokens(session.input_tokens + session.output_tokens)}</div>
+        </div>
+
+        {loading ? (
+          <Skeleton className="h-40 w-full" />
+        ) : detail?.messages && detail.messages.length > 0 ? (
+          <div className="space-y-2">
+            {detail.messages.map((msg, i) => (
+              <div key={i} className={`rounded-md p-3 text-sm ${
+                msg.role === 'user' ? 'bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800' :
+                msg.role === 'tool_result' ? `border ${msg.isError ? 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800' : 'bg-gray-50 dark:bg-gray-900/30 border-gray-200 dark:border-gray-700'}` :
+                'bg-muted/50 border border-border'
+              }`}>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-xs font-medium text-muted-foreground uppercase">{msg.role}</span>
+                  {msg.toolName && <Badge variant="secondary" className="text-xs">{msg.toolName}</Badge>}
+                  {msg.timestamp && <span className="text-xs text-muted-foreground ml-auto">{new Date(msg.timestamp).toLocaleTimeString()}</span>}
+                </div>
+                <pre className="whitespace-pre-wrap text-xs font-mono break-all">{msg.text}</pre>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">No conversation data available for this session.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Sessions Tab ─────────────────────────────────────────────────────────────
 
-function SessionsTab({ sessions, loading }: { sessions: Session[]; loading: boolean }) {
+function SessionsTab({ range, loading: initialLoading }: { range: { from?: string; to?: string }; loading: boolean }) {
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
   const [agentFilter, setAgentFilter] = useState<string>('all');
-  const filtered = agentFilter === 'all' ? sessions : sessions.filter(s => s.agent === agentFilter);
-  const agents = [...new Set(sessions.map(s => s.agent))];
+  const [completedFilter, setCompletedFilter] = useState<string>('all');
+  const [search, setSearch] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  const [loading, setLoading] = useState(initialLoading);
+  const [selectedSession, setSelectedSession] = useState<Session | null>(null);
+  const pageSize = 50;
 
-  if (loading) return <Skeleton className="h-64 w-full" />;
+  const loadSessions = useCallback(async () => {
+    setLoading(true);
+    try {
+      const extra: Record<string, string> = { limit: String(pageSize), offset: String(page * pageSize) };
+      if (agentFilter !== 'all') extra.agent = agentFilter;
+      if (completedFilter !== 'all') extra.completed = completedFilter;
+      if (search) extra.search = search;
+      const data = await fetchJson<SessionsResponse>(buildQuery('/api/coding-agents/sessions', range, extra));
+      setSessions(data.sessions);
+      setTotal(data.total);
+    } catch { /* ignore */ }
+    setLoading(false);
+  }, [page, agentFilter, completedFilter, search, range]);
+
+  useEffect(() => { loadSessions(); }, [loadSessions]);
+
+  const handleSearch = () => { setSearch(searchInput); setPage(0); };
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2">
-        <Select value={agentFilter} onValueChange={setAgentFilter}>
-          <SelectTrigger className="w-48">
-            <SelectValue placeholder="Filter by agent" />
-          </SelectTrigger>
+      <div className="flex items-center gap-2 flex-wrap">
+        <input
+          className="border rounded px-3 py-1.5 text-sm w-64 bg-background"
+          placeholder="Search prompts..."
+          value={searchInput}
+          onChange={e => setSearchInput(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && handleSearch()}
+        />
+        <button onClick={handleSearch} className="px-3 py-1.5 text-sm border rounded hover:bg-muted">Search</button>
+        <Select value={agentFilter} onValueChange={v => { setAgentFilter(v); setPage(0); }}>
+          <SelectTrigger className="w-40"><SelectValue placeholder="Agent" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Agents</SelectItem>
-            {agents.map(a => (
-              <SelectItem key={a} value={a}>{AGENT_LABELS[a] ?? a}</SelectItem>
-            ))}
+            <SelectItem value="claude-code">Claude Code</SelectItem>
+            <SelectItem value="kiro">Kiro</SelectItem>
+            <SelectItem value="codex">Codex CLI</SelectItem>
           </SelectContent>
         </Select>
-        <span className="text-sm text-muted-foreground">{filtered.length} sessions</span>
+        <Select value={completedFilter} onValueChange={v => { setCompletedFilter(v); setPage(0); }}>
+          <SelectTrigger className="w-36"><SelectValue placeholder="Status" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Status</SelectItem>
+            <SelectItem value="true">Completed</SelectItem>
+            <SelectItem value="false">Abandoned</SelectItem>
+          </SelectContent>
+        </Select>
+        <span className="text-sm text-muted-foreground">{total} sessions</span>
       </div>
 
-      <Card>
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Agent</TableHead>
-              <TableHead>First Prompt</TableHead>
-              <TableHead>Project</TableHead>
-              <TableHead className="text-right">Duration</TableHead>
-              <TableHead className="text-right">Messages</TableHead>
-              <TableHead className="text-right">Tokens</TableHead>
-              <TableHead className="text-right">Cost</TableHead>
-              <TableHead>Date</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {filtered.slice(0, 50).map(s => (
-              <TableRow key={`${s.agent}-${s.session_id}`}>
-                <TableCell>
-                  <Badge variant="outline" style={{ borderColor: AGENT_COLORS[s.agent], color: AGENT_COLORS[s.agent] }}>
-                    {AGENT_LABELS[s.agent] ?? s.agent}
-                  </Badge>
-                </TableCell>
-                <TableCell className="max-w-xs truncate text-sm" title={s.first_prompt}>
-                  {s.first_prompt || <span className="text-muted-foreground italic">No prompt</span>}
-                </TableCell>
-                <TableCell className="max-w-[120px] truncate text-sm" title={s.project_path}>
-                  {s.project_path.split('/').pop()}
-                </TableCell>
-                <TableCell className="text-right text-sm">{formatDuration(s.duration_minutes)}</TableCell>
-                <TableCell className="text-right text-sm">{s.user_message_count + s.assistant_message_count}</TableCell>
-                <TableCell className="text-right text-sm">
-                  {s.input_tokens + s.output_tokens > 0 ? formatTokens(s.input_tokens + s.output_tokens) : '-'}
-                </TableCell>
-                <TableCell className="text-right text-sm">
-                  {s.estimated_cost > 0 ? formatCost(s.estimated_cost) : '-'}
-                </TableCell>
-                <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
-                  {new Date(s.start_time).toLocaleDateString()}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </Card>
+      {loading ? <Skeleton className="h-64 w-full" /> : (
+        <>
+          <Card>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Agent</TableHead>
+                  <TableHead>First Prompt</TableHead>
+                  <TableHead>Project</TableHead>
+                  <TableHead className="text-right">Duration</TableHead>
+                  <TableHead className="text-right">Messages</TableHead>
+                  <TableHead className="text-right">Tokens</TableHead>
+                  <TableHead className="text-right">Cost</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Date</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {sessions.map(s => (
+                  <TableRow key={`${s.agent}-${s.session_id}`} className="cursor-pointer hover:bg-muted/50" onClick={() => setSelectedSession(s)}>
+                    <TableCell>
+                      <Badge variant="outline" style={{ borderColor: AGENT_COLORS[s.agent], color: AGENT_COLORS[s.agent] }}>
+                        {AGENT_LABELS[s.agent] ?? s.agent}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="max-w-xs truncate text-sm" title={s.first_prompt}>
+                      {s.first_prompt || <span className="text-muted-foreground italic">No prompt</span>}
+                    </TableCell>
+                    <TableCell className="max-w-[120px] truncate text-sm" title={s.project_path}>
+                      {s.project_path.split('/').pop()}
+                    </TableCell>
+                    <TableCell className="text-right text-sm">{formatDuration(s.duration_minutes)}</TableCell>
+                    <TableCell className="text-right text-sm">{s.user_message_count + s.assistant_message_count}</TableCell>
+                    <TableCell className="text-right text-sm">
+                      {s.input_tokens + s.output_tokens > 0 ? formatTokens(s.input_tokens + s.output_tokens) : '-'}
+                    </TableCell>
+                    <TableCell className="text-right text-sm">
+                      {s.estimated_cost > 0 ? formatCost(s.estimated_cost) : '-'}
+                    </TableCell>
+                    <TableCell className="text-sm">
+                      {s.session_completed ? <span className="text-green-600 text-xs">Done</span> : <span className="text-amber-600 text-xs">Abandoned</span>}
+                    </TableCell>
+                    <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
+                      {new Date(s.start_time).toLocaleDateString()}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </Card>
+
+          {/* Pagination */}
+          {total > pageSize && (
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">
+                Showing {page * pageSize + 1}-{Math.min((page + 1) * pageSize, total)} of {total}
+              </span>
+              <div className="flex gap-2">
+                <button className="px-3 py-1 text-sm border rounded disabled:opacity-50" disabled={page === 0} onClick={() => setPage(p => p - 1)}>Prev</button>
+                <button className="px-3 py-1 text-sm border rounded disabled:opacity-50" disabled={(page + 1) * pageSize >= total} onClick={() => setPage(p => p + 1)}>Next</button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {selectedSession && <SessionDetailPanel session={selectedSession} onClose={() => setSelectedSession(null)} />}
     </div>
   );
 }
@@ -850,6 +1053,207 @@ function ToolsTab({ tools, loading }: { tools: ToolsData | null; loading: boolea
   );
 }
 
+// ─── Projects Tab ───────────────────────────────────────────────────────────
+
+function ProjectsTab({ projects, loading }: { projects: ProjectAnalytics[] | null; loading: boolean }) {
+  if (loading || !projects) return <Skeleton className="h-64 w-full" />;
+
+  return (
+    <div className="space-y-4">
+      <span className="text-sm text-muted-foreground">{projects.length} projects</span>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {projects.slice(0, 15).map(p => (
+          <Card key={p.project_path}>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium truncate" title={p.project_path}>{p.display_name}</CardTitle>
+              <div className="flex gap-1">
+                {p.agents.map(a => (
+                  <div key={a} className="w-2 h-2 rounded-full" style={{ backgroundColor: AGENT_COLORS[a] }} title={AGENT_LABELS[a] ?? a} />
+                ))}
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-1 text-sm">
+              <MetricRow label="Sessions" value={`${p.completed_sessions}/${p.total_sessions}`} />
+              <MetricRow label="Completion" value={formatPct(p.completion_rate)} accent={p.completion_rate < 0.6 ? 'red' : p.completion_rate < 0.8 ? 'yellow' : 'green'} />
+              <MetricRow label="Cost" value={p.total_cost > 0 ? formatCost(p.total_cost) : 'N/A'} />
+              {p.wasted_cost > 0 && <MetricRow label="Wasted" value={formatCost(p.wasted_cost)} accent="red" />}
+              <MetricRow label="Avg Session" value={formatDuration(p.avg_session_minutes)} />
+              {p.total_tool_errors > 0 && <MetricRow label="Tool Errors" value={String(p.total_tool_errors)} accent="yellow" />}
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Advanced Analytics Tab ─────────────────────────────────────────────────
+
+function AdvancedTab({ advanced, failurePatterns, loading }: {
+  advanced: AdvancedAnalytics | null;
+  failurePatterns: FailurePattern[] | null;
+  loading: boolean;
+}) {
+  if (loading || !advanced) return <Skeleton className="h-64 w-full" />;
+
+  const { mcp, hourly_effectiveness, duration_distribution, conversation_depth } = advanced;
+
+  return (
+    <div className="space-y-6">
+      {/* MCP Servers */}
+      {mcp.servers.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">MCP Servers ({mcp.servers.length})</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Server</TableHead>
+                  <TableHead>Agent</TableHead>
+                  <TableHead className="text-right">Calls</TableHead>
+                  <TableHead className="text-right">Errors</TableHead>
+                  <TableHead className="text-right">Success %</TableHead>
+                  <TableHead className="text-right">Sessions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {mcp.servers.map((s, i) => (
+                  <TableRow key={i}>
+                    <TableCell className="font-mono text-sm">{s.server}</TableCell>
+                    <TableCell>
+                      <Badge variant="outline" style={{ borderColor: AGENT_COLORS[s.agent], color: AGENT_COLORS[s.agent] }} className="text-xs">
+                        {AGENT_LABELS[s.agent] ?? s.agent}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right text-sm">{s.total_calls}</TableCell>
+                    <TableCell className="text-right text-sm">{s.error_count > 0 ? s.error_count : '-'}</TableCell>
+                    <TableCell className={`text-right text-sm font-medium ${successRateColor(s.success_rate)}`}>{formatPct(s.success_rate)}</TableCell>
+                    <TableCell className="text-right text-sm">{s.session_count}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Hourly Effectiveness */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">Completion Rate by Hour</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={hourly_effectiveness.filter(h => h.total_sessions > 0)}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="hour" fontSize={11} />
+                <YAxis domain={[0, 1]} tickFormatter={(v: number) => formatPct(v)} fontSize={11} />
+                <Tooltip formatter={(v: number) => formatPct(v)} />
+                <Bar dataKey="completion_rate" name="Completion Rate">
+                  {hourly_effectiveness.filter(h => h.total_sessions > 0).map((h, i) => (
+                    <Cell key={i} fill={h.completion_rate >= 0.8 ? '#22c55e' : h.completion_rate >= 0.5 ? '#f59e0b' : '#ef4444'} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+
+        {/* Duration Distribution */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">Session Duration Distribution</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={duration_distribution}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="label" fontSize={11} />
+                <YAxis fontSize={11} />
+                <Tooltip />
+                <Bar dataKey="session_count" fill="#60a5fa" name="Sessions" />
+                <Bar dataKey="completed_count" fill="#22c55e" name="Completed" />
+              </BarChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Conversation Depth */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium">Conversation Depth</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-3 gap-4 mb-4">
+            <div className="text-center">
+              <p className="text-2xl font-bold">{conversation_depth.avg_depth.toFixed(1)}</p>
+              <p className="text-xs text-muted-foreground">Avg turns/session</p>
+            </div>
+            <div className="text-center">
+              <p className="text-2xl font-bold text-green-600">{formatPct(conversation_depth.low_backforth_completion_rate)}</p>
+              <p className="text-xs text-muted-foreground">Completion ({'<'}5 turns)</p>
+            </div>
+            <div className="text-center">
+              <p className={`text-2xl font-bold ${conversation_depth.high_backforth_completion_rate < 0.5 ? 'text-red-600' : 'text-amber-600'}`}>
+                {formatPct(conversation_depth.high_backforth_completion_rate)}
+              </p>
+              <p className="text-xs text-muted-foreground">Completion (5+ turns)</p>
+            </div>
+          </div>
+          <ResponsiveContainer width="100%" height={150}>
+            <BarChart data={conversation_depth.depth_buckets}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="label" fontSize={11} />
+              <YAxis fontSize={11} />
+              <Tooltip />
+              <Bar dataKey="session_count" fill="#8b5cf6" name="Sessions" />
+            </BarChart>
+          </ResponsiveContainer>
+        </CardContent>
+      </Card>
+
+      {/* Failure Patterns */}
+      {failurePatterns && failurePatterns.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">Recurring Failure Patterns</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Agent</TableHead>
+                  <TableHead>Tool</TableHead>
+                  <TableHead className="text-right">Occurrences</TableHead>
+                  <TableHead className="text-right">Sessions Affected</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {failurePatterns.slice(0, 10).map((fp, i) => (
+                  <TableRow key={i}>
+                    <TableCell>
+                      <Badge variant="outline" style={{ borderColor: AGENT_COLORS[fp.agent], color: AGENT_COLORS[fp.agent] }} className="text-xs">
+                        {AGENT_LABELS[fp.agent] ?? fp.agent}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="font-mono text-sm">{fp.tool}</TableCell>
+                    <TableCell className="text-right text-sm text-red-600">{fp.occurrences}</TableCell>
+                    <TableCell className="text-right text-sm">{fp.sessions}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
 // ─── Shared Components ────────────────────────────────────────────────────────
 
 function StatCard({ title, value, accent }: { title: string; value: string; accent?: 'red' | 'yellow' | 'green' }) {
@@ -892,11 +1296,13 @@ const DATE_RANGE_LABELS: Record<DateRangePreset, string> = {
 export const CodingAgentsPage: React.FC = () => {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [stats, setStats] = useState<CombinedStats | null>(null);
-  const [sessions, setSessions] = useState<Session[]>([]);
   const [costs, setCosts] = useState<CostAnalytics | null>(null);
   const [activity, setActivity] = useState<ActivityData | null>(null);
   const [tools, setTools] = useState<ToolsData | null>(null);
   const [efficiency, setEfficiency] = useState<EfficiencyData | null>(null);
+  const [projects, setProjects] = useState<ProjectAnalytics[] | null>(null);
+  const [advanced, setAdvanced] = useState<AdvancedAnalytics | null>(null);
+  const [failurePatterns, setFailurePatterns] = useState<FailurePattern[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('overview');
   const [error, setError] = useState<string | null>(null);
@@ -907,11 +1313,18 @@ export const CodingAgentsPage: React.FC = () => {
   // Reset lazy-loaded tab data when range changes
   const handleRangeChange = (preset: DateRangePreset) => {
     setRangePreset(preset);
-    setSessions([]);
     setCosts(null);
     setActivity(null);
     setTools(null);
     setEfficiency(null);
+    setProjects(null);
+    setAdvanced(null);
+    setFailurePatterns(null);
+  };
+
+  const handleExport = (format: 'json' | 'csv') => {
+    const url = `${ENV_CONFIG.backendUrl}${buildQuery('/api/coding-agents/export', range, { format })}`;
+    window.open(url, '_blank');
   };
 
   useEffect(() => {
@@ -939,11 +1352,7 @@ export const CodingAgentsPage: React.FC = () => {
 
   // Lazy-load tab data
   useEffect(() => {
-    if (activeTab === 'sessions' && sessions.length === 0) {
-      fetchJson<{ sessions: Session[] }>(buildQuery('/api/coding-agents/sessions', range, { limit: '200' }))
-        .then(d => setSessions(d.sessions))
-        .catch(() => {});
-    }
+    // Sessions tab manages its own data loading now
     if (activeTab === 'costs' && !costs) {
       fetchJson<CostAnalytics>(buildQuery('/api/coding-agents/costs', range))
         .then(d => setCosts(d))
@@ -963,6 +1372,20 @@ export const CodingAgentsPage: React.FC = () => {
       fetchJson<EfficiencyData>(buildQuery('/api/coding-agents/efficiency', range))
         .then(d => setEfficiency(d))
         .catch(() => {});
+    }
+    if (activeTab === 'projects' && !projects) {
+      fetchJson<{ projects: ProjectAnalytics[] }>(buildQuery('/api/coding-agents/projects', range))
+        .then(d => setProjects(d.projects))
+        .catch(() => {});
+    }
+    if (activeTab === 'advanced' && !advanced) {
+      Promise.all([
+        fetchJson<AdvancedAnalytics>(buildQuery('/api/coding-agents/advanced', range)),
+        fetchJson<{ patterns: FailurePattern[] }>(buildQuery('/api/coding-agents/failure-patterns', range)),
+      ]).then(([adv, fp]) => {
+        setAdvanced(adv);
+        setFailurePatterns(fp.patterns);
+      }).catch(() => {});
     }
   }, [activeTab, rangePreset]);
 
@@ -984,16 +1407,27 @@ export const CodingAgentsPage: React.FC = () => {
             )}
           </p>
         </div>
-        <Select value={rangePreset} onValueChange={(v) => handleRangeChange(v as DateRangePreset)}>
-          <SelectTrigger className="w-40">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {(Object.keys(DATE_RANGE_LABELS) as DateRangePreset[]).map(k => (
-              <SelectItem key={k} value={k}>{DATE_RANGE_LABELS[k]}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <div className="flex items-center gap-2">
+          <Select value={rangePreset} onValueChange={(v) => handleRangeChange(v as DateRangePreset)}>
+            <SelectTrigger className="w-40">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {(Object.keys(DATE_RANGE_LABELS) as DateRangePreset[]).map(k => (
+                <SelectItem key={k} value={k}>{DATE_RANGE_LABELS[k]}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select onValueChange={(v) => handleExport(v as 'json' | 'csv')}>
+            <SelectTrigger className="w-28">
+              <SelectValue placeholder="Export" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="json">JSON</SelectItem>
+              <SelectItem value="csv">CSV</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       {error && agents.length === 0 ? (
@@ -1009,20 +1443,25 @@ export const CodingAgentsPage: React.FC = () => {
         </Card>
       ) : (
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList>
+          <TabsList className="flex-wrap">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="sessions">Sessions</TabsTrigger>
+            <TabsTrigger value="projects">Projects</TabsTrigger>
             <TabsTrigger value="costs">Costs</TabsTrigger>
             <TabsTrigger value="activity">Activity</TabsTrigger>
             <TabsTrigger value="efficiency">Efficiency</TabsTrigger>
             <TabsTrigger value="tools">Tools</TabsTrigger>
+            <TabsTrigger value="advanced">Advanced</TabsTrigger>
           </TabsList>
 
           <TabsContent value="overview" className="mt-4">
             <OverviewTab stats={stats} agents={agents} onTabChange={setActiveTab} rangePreset={rangePreset} />
           </TabsContent>
           <TabsContent value="sessions" className="mt-4">
-            <SessionsTab sessions={sessions} loading={activeTab === 'sessions' && sessions.length === 0 && loading} />
+            <SessionsTab range={range} loading={loading} />
+          </TabsContent>
+          <TabsContent value="projects" className="mt-4">
+            <ProjectsTab projects={projects} loading={activeTab === 'projects' && !projects} />
           </TabsContent>
           <TabsContent value="costs" className="mt-4">
             <CostsTab costs={costs} loading={activeTab === 'costs' && !costs} />
@@ -1035,6 +1474,9 @@ export const CodingAgentsPage: React.FC = () => {
           </TabsContent>
           <TabsContent value="tools" className="mt-4">
             <ToolsTab tools={tools} loading={activeTab === 'tools' && !tools} />
+          </TabsContent>
+          <TabsContent value="advanced" className="mt-4">
+            <AdvancedTab advanced={advanced} failurePatterns={failurePatterns} loading={activeTab === 'advanced' && !advanced} />
           </TabsContent>
         </Tabs>
       )}

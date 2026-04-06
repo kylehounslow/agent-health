@@ -12,7 +12,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import type { CodingAgentReader, AgentSession, AgentStats, DailyActivity } from '../types';
+import type { CodingAgentReader, AgentSession, AgentStats, DailyActivity, SessionDetail, SessionMessage } from '../types';
 
 const CODEX_DIR = path.join(os.homedir(), '.codex');
 
@@ -211,5 +211,62 @@ export class CodexReader implements CodingAgentReader {
       avgSessionMinutes: sessions.length > 0 ? totalDuration / sessions.length : 0,
       dailyActivity,
     };
+  }
+
+  async getSessionDetail(sessionId: string): Promise<SessionDetail | null> {
+    const files = await findRolloutFiles(codexPath('sessions'));
+    const target = files.find(f => path.basename(f, '.jsonl') === `rollout-${sessionId}`);
+    if (!target) return null;
+
+    const session = await deriveSessionFromRollout(target);
+    if (!session) return null;
+
+    const messages: SessionMessage[] = [];
+    const raw = await fs.readFile(target, 'utf-8');
+    const lines = raw.split(/\r?\n/).filter(Boolean);
+    let lastToolName = '';
+
+    for (const line of lines) {
+      try {
+        const obj: AnyObj = JSON.parse(line);
+        const ts = obj.timestamp as string | undefined;
+        const item = obj.item;
+        if (!item) continue;
+
+        if (item.type === 'message' && item.role === 'user') {
+          const text = Array.isArray(item.content)
+            ? item.content.filter((c: AnyObj) => c.type === 'input_text').map((c: AnyObj) => c.text ?? '').join('\n')
+            : '';
+          if (text) messages.push({ role: 'user', text: text.slice(0, 5000), timestamp: ts });
+        }
+        if (item.type === 'message' && item.role === 'assistant') {
+          const text = Array.isArray(item.content)
+            ? item.content.filter((c: AnyObj) => c.type === 'output_text').map((c: AnyObj) => c.text ?? '').join('\n')
+            : '';
+          if (text) messages.push({ role: 'assistant', text: text.slice(0, 5000), timestamp: ts });
+        }
+        if (item.type === 'function_call') {
+          lastToolName = item.name ?? 'unknown';
+          messages.push({
+            role: 'assistant',
+            text: `Tool: ${lastToolName}\n${JSON.stringify(item.arguments ?? {}, null, 2).slice(0, 2000)}`,
+            timestamp: ts,
+            toolName: lastToolName,
+          });
+        }
+        if (item.type === 'function_call_output') {
+          const output = typeof item.output === 'string' ? item.output : JSON.stringify(item.output ?? '');
+          messages.push({
+            role: 'tool_result',
+            text: output.slice(0, 2000),
+            timestamp: ts,
+            toolName: lastToolName,
+            isError: ERROR_PATTERN.test(output),
+          });
+        }
+      } catch { /* skip */ }
+    }
+
+    return { session, messages };
   }
 }

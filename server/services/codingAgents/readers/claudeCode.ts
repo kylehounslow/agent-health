@@ -11,7 +11,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import type { CodingAgentReader, AgentSession, AgentStats, DailyActivity } from '../types';
+import type { CodingAgentReader, AgentSession, AgentStats, DailyActivity, SessionDetail, SessionMessage } from '../types';
 import { estimateCost, estimateCacheSavings } from '../pricing';
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
@@ -266,5 +266,75 @@ export class ClaudeCodeReader implements CodingAgentReader {
       avgSessionMinutes: sessions.length > 0 ? totalDuration / sessions.length : 0,
       dailyActivity,
     };
+  }
+
+  async getSessionDetail(sessionId: string): Promise<SessionDetail | null> {
+    const slugs = await listProjectSlugs();
+    for (const slug of slugs) {
+      const filePath = claudePath('projects', slug, `${sessionId}.jsonl`);
+      try {
+        await fs.access(filePath);
+      } catch {
+        continue;
+      }
+
+      const projectPath = await resolveProjectPath(slug);
+      const session = await deriveSessionMeta(filePath, sessionId, projectPath);
+      if (!session) continue;
+
+      const messages: SessionMessage[] = [];
+      const raw = await fs.readFile(filePath, 'utf-8');
+      const lines = raw.split(/\r?\n/).filter(Boolean);
+
+      for (const line of lines) {
+        try {
+          const obj: AnyObj = JSON.parse(line);
+          const ts = obj.timestamp as string | undefined;
+
+          if (obj.type === 'user') {
+            const content = obj.message?.content;
+            let text = '';
+            if (typeof content === 'string') {
+              text = content;
+            } else if (Array.isArray(content)) {
+              for (const c of content) {
+                if (c.type === 'text' && c.text) text += c.text + '\n';
+                if (c.type === 'tool_result') {
+                  messages.push({
+                    role: 'tool_result',
+                    text: typeof c.content === 'string' ? c.content : JSON.stringify(c.content ?? '').slice(0, 2000),
+                    timestamp: ts,
+                    toolName: c.tool_use_id,
+                    isError: c.is_error === true,
+                  });
+                }
+              }
+            }
+            if (text.trim()) {
+              messages.push({ role: 'user', text: stripXmlTags(text).slice(0, 5000), timestamp: ts });
+            }
+          }
+
+          if (obj.type === 'assistant' && Array.isArray(obj.message?.content)) {
+            for (const c of obj.message.content) {
+              if (c.type === 'text' && c.text) {
+                messages.push({ role: 'assistant', text: c.text.slice(0, 5000), timestamp: ts });
+              }
+              if (c.type === 'tool_use') {
+                messages.push({
+                  role: 'assistant',
+                  text: `Tool: ${c.name}\n${JSON.stringify(c.input ?? {}, null, 2).slice(0, 2000)}`,
+                  timestamp: ts,
+                  toolName: c.name,
+                });
+              }
+            }
+          }
+        } catch { /* skip */ }
+      }
+
+      return { session, messages };
+    }
+    return null;
   }
 }
