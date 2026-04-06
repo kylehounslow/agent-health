@@ -21,6 +21,7 @@ import configRoutes from './config';
 import evaluationRoutes from './evaluation';
 import debugRoutes from './debug';
 import codingAgentsRoutes from './codingAgents';
+import claudeCodeWorkspaceRoutes from './claudeCodeWorkspace';
 
 const router = Router();
 
@@ -43,5 +44,6 @@ router.use(configRoutes);        // /api/agents, /api/models
 router.use(evaluationRoutes);    // /api/evaluate
 router.use(debugRoutes);         // /api/debug
 router.use(codingAgentsRoutes);  // /api/coding-agents/*
+router.use(claudeCodeWorkspaceRoutes);  // /api/coding-agents/claude-code/*
 
 export default router;

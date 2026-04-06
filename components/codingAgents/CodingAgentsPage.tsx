@@ -208,6 +208,46 @@ interface FailurePattern {
   sessions: number;
   agent: string;
 }
+// Workspace (Claude Code specific)
+interface MemoryFile {
+  name: string;
+  description: string;
+  type: string;
+  content: string;
+  filePath: string;
+}
+interface MemoryProject {
+  slug: string;
+  projectPath: string;
+  memories: MemoryFile[];
+}
+interface PlanFile {
+  name: string;
+  content: string;
+  modifiedAt: string;
+}
+interface TaskItem {
+  id: string;
+  subject: string;
+  description: string;
+  status: string;
+  activeForm?: string;
+  owner?: string;
+}
+interface SkillInfo { name: string; description: string }
+interface PluginInfo { name: string; scope: string; version: string; installedAt: string }
+interface ClaudeSettings {
+  settings: Record<string, unknown>;
+  skills: SkillInfo[];
+  plugins: PluginInfo[];
+  storage_bytes: number;
+}
+interface ActiveSessionInfo {
+  session_id: string;
+  project_path: string;
+  last_activity_ago: string;
+  model?: string;
+}
 
 // ─── Formatters ──────────────────────────────────────────────────────────────
 
@@ -394,6 +434,9 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset }: { stats: Combi
         <StatCard title="Wasted Cost" value={stats.wastedCost > 0 ? formatCost(stats.wastedCost) : '$0.00'} accent={stats.wastedCost > 0.5 ? 'red' : stats.wastedCost > 0 ? 'yellow' : undefined} />
         <StatCard title="Agents Detected" value={String(agents.length)} />
       </div>
+
+      {/* Token cache breakdown */}
+      {cacheSavings > 0 && <TokenCacheBar stats={stats} />}
 
       {/* Per-agent breakdown */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -1254,6 +1297,338 @@ function AdvancedTab({ advanced, failurePatterns, loading }: {
   );
 }
 
+// ─── Workspace Tab (Claude Code specific) ───────────────────────────────────
+
+function WorkspaceTab() {
+  const [section, setSection] = useState<'active' | 'memory' | 'plans' | 'tasks' | 'settings'>('active');
+  const [activeSessions, setActiveSessions] = useState<ActiveSessionInfo[] | null>(null);
+  const [memoryProjects, setMemoryProjects] = useState<MemoryProject[] | null>(null);
+  const [plans, setPlans] = useState<PlanFile[] | null>(null);
+  const [tasks, setTasks] = useState<TaskItem[] | null>(null);
+  const [settings, setSettings] = useState<ClaudeSettings | null>(null);
+  const [editingMemory, setEditingMemory] = useState<MemoryFile | null>(null);
+  const [editContent, setEditContent] = useState('');
+  const [expandedPlan, setExpandedPlan] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (section === 'active' && !activeSessions) {
+      fetchJson<{ sessions: ActiveSessionInfo[] }>('/api/coding-agents/claude-code/active-sessions')
+        .then(d => setActiveSessions(d.sessions)).catch(() => setActiveSessions([]));
+    }
+    if (section === 'memory' && !memoryProjects) {
+      fetchJson<{ projects: MemoryProject[] }>('/api/coding-agents/claude-code/memory')
+        .then(d => setMemoryProjects(d.projects)).catch(() => setMemoryProjects([]));
+    }
+    if (section === 'plans' && !plans) {
+      fetchJson<{ plans: PlanFile[] }>('/api/coding-agents/claude-code/plans')
+        .then(d => setPlans(d.plans)).catch(() => setPlans([]));
+    }
+    if (section === 'tasks' && !tasks) {
+      fetchJson<{ tasks: TaskItem[] }>('/api/coding-agents/claude-code/tasks')
+        .then(d => setTasks(d.tasks)).catch(() => setTasks([]));
+    }
+    if (section === 'settings' && !settings) {
+      fetchJson<ClaudeSettings>('/api/coding-agents/claude-code/settings')
+        .then(d => setSettings(d)).catch(() => {});
+    }
+  }, [section]);
+
+  const saveMemory = async () => {
+    if (!editingMemory) return;
+    const res = await fetch(`${ENV_CONFIG.backendUrl}/api/coding-agents/claude-code/memory`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filePath: editingMemory.filePath, content: editContent }),
+    });
+    if (res.ok) {
+      setEditingMemory(null);
+      setMemoryProjects(null); // refresh
+    }
+  };
+
+  const TASK_STATUS_COLORS: Record<string, string> = {
+    completed: 'text-green-600',
+    in_progress: 'text-blue-600',
+    pending: 'text-muted-foreground',
+    deleted: 'text-red-600 line-through',
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-2 flex-wrap">
+        {(['active', 'memory', 'plans', 'tasks', 'settings'] as const).map(s => (
+          <button
+            key={s}
+            onClick={() => setSection(s)}
+            className={`px-3 py-1.5 text-sm border rounded capitalize ${section === s ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
+          >
+            {s === 'active' ? 'Active Sessions' : s}
+          </button>
+        ))}
+      </div>
+
+      {/* Active Sessions */}
+      {section === 'active' && (
+        !activeSessions ? <Skeleton className="h-32 w-full" /> :
+        activeSessions.length === 0 ? (
+          <Card><CardContent className="pt-6 text-center text-muted-foreground text-sm">No active sessions (last 30 minutes)</CardContent></Card>
+        ) : (
+          <div className="space-y-2">
+            <span className="text-sm text-muted-foreground">{activeSessions.length} active session{activeSessions.length > 1 ? 's' : ''}</span>
+            {activeSessions.map(s => (
+              <Card key={s.session_id}>
+                <CardContent className="pt-3 pb-3 flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-mono">{s.session_id.slice(0, 8)}...</p>
+                    <p className="text-xs text-muted-foreground">{s.project_path}</p>
+                  </div>
+                  <div className="text-right">
+                    <Badge variant="outline" className="text-green-600 border-green-600">Active</Badge>
+                    <p className="text-xs text-muted-foreground mt-1">{s.last_activity_ago}</p>
+                    {s.model && <p className="text-xs text-muted-foreground">{s.model}</p>}
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )
+      )}
+
+      {/* Memory */}
+      {section === 'memory' && (
+        !memoryProjects ? <Skeleton className="h-32 w-full" /> :
+        memoryProjects.length === 0 ? (
+          <Card><CardContent className="pt-6 text-center text-muted-foreground text-sm">No memory files found</CardContent></Card>
+        ) : (
+          <div className="space-y-4">
+            {memoryProjects.map(proj => (
+              <Card key={proj.slug}>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium truncate" title={proj.projectPath}>{proj.projectPath.split('/').pop()}</CardTitle>
+                  <p className="text-xs text-muted-foreground">{proj.memories.length} memory file{proj.memories.length > 1 ? 's' : ''}</p>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {proj.memories.map(mem => (
+                    <div key={mem.filePath} className="border rounded p-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <div>
+                          <span className="text-sm font-medium">{mem.name}</span>
+                          {mem.type !== 'index' && <Badge variant="secondary" className="ml-2 text-xs">{mem.type}</Badge>}
+                        </div>
+                        <button
+                          onClick={() => { setEditingMemory(mem); setEditContent(mem.content); }}
+                          className="text-xs text-blue-600 hover:underline"
+                        >Edit</button>
+                      </div>
+                      {mem.description && <p className="text-xs text-muted-foreground mb-1">{mem.description}</p>}
+                      <pre className="text-xs font-mono bg-muted/50 p-2 rounded max-h-40 overflow-y-auto whitespace-pre-wrap">{mem.content.slice(0, 1000)}</pre>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            ))}
+
+            {/* Memory editor modal */}
+            {editingMemory && (
+              <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+                <Card className="w-full max-w-2xl max-h-[80vh] flex flex-col">
+                  <CardHeader className="pb-2">
+                    <div className="flex items-center justify-between">
+                      <CardTitle className="text-sm">Edit: {editingMemory.name}</CardTitle>
+                      <button onClick={() => setEditingMemory(null)} className="text-muted-foreground hover:text-foreground">&times;</button>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="flex-1 overflow-hidden flex flex-col gap-2">
+                    <textarea
+                      className="flex-1 w-full border rounded p-3 font-mono text-sm bg-background resize-none min-h-[300px]"
+                      value={editContent}
+                      onChange={e => setEditContent(e.target.value)}
+                    />
+                    <div className="flex justify-end gap-2">
+                      <button onClick={() => setEditingMemory(null)} className="px-4 py-2 text-sm border rounded hover:bg-muted">Cancel</button>
+                      <button onClick={saveMemory} className="px-4 py-2 text-sm bg-primary text-primary-foreground rounded hover:opacity-90">Save</button>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            )}
+          </div>
+        )
+      )}
+
+      {/* Plans */}
+      {section === 'plans' && (
+        !plans ? <Skeleton className="h-32 w-full" /> :
+        plans.length === 0 ? (
+          <Card><CardContent className="pt-6 text-center text-muted-foreground text-sm">No plans found</CardContent></Card>
+        ) : (
+          <div className="space-y-2">
+            <span className="text-sm text-muted-foreground">{plans.length} plan{plans.length > 1 ? 's' : ''}</span>
+            {plans.map(plan => (
+              <Card key={plan.name}>
+                <CardContent className="pt-3 pb-3">
+                  <div
+                    className="flex items-center justify-between cursor-pointer"
+                    onClick={() => setExpandedPlan(expandedPlan === plan.name ? null : plan.name)}
+                  >
+                    <div>
+                      <p className="text-sm font-medium">{plan.name}</p>
+                      <p className="text-xs text-muted-foreground">{new Date(plan.modifiedAt).toLocaleString()}</p>
+                    </div>
+                    <span className="text-muted-foreground">{expandedPlan === plan.name ? '\u25B2' : '\u25BC'}</span>
+                  </div>
+                  {expandedPlan === plan.name && (
+                    <pre className="mt-3 text-xs font-mono bg-muted/50 p-3 rounded max-h-96 overflow-y-auto whitespace-pre-wrap">{plan.content}</pre>
+                  )}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )
+      )}
+
+      {/* Tasks */}
+      {section === 'tasks' && (
+        !tasks ? <Skeleton className="h-32 w-full" /> :
+        tasks.length === 0 ? (
+          <Card><CardContent className="pt-6 text-center text-muted-foreground text-sm">No tasks found</CardContent></Card>
+        ) : (
+          <div className="space-y-2">
+            <div className="flex gap-4 text-sm text-muted-foreground">
+              <span>{tasks.filter(t => t.status === 'completed').length} done</span>
+              <span>{tasks.filter(t => t.status === 'in_progress').length} in progress</span>
+              <span>{tasks.filter(t => t.status === 'pending').length} pending</span>
+            </div>
+            <Card>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-12">ID</TableHead>
+                    <TableHead>Task</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Owner</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {tasks.filter(t => t.status !== 'deleted').map(t => (
+                    <TableRow key={t.id}>
+                      <TableCell className="text-sm text-muted-foreground">#{t.id}</TableCell>
+                      <TableCell>
+                        <p className="text-sm">{t.subject}</p>
+                        {t.description && <p className="text-xs text-muted-foreground truncate max-w-md">{t.description}</p>}
+                      </TableCell>
+                      <TableCell className={`text-sm ${TASK_STATUS_COLORS[t.status] ?? ''}`}>{t.status}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{t.owner ?? '-'}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Card>
+          </div>
+        )
+      )}
+
+      {/* Settings */}
+      {section === 'settings' && (
+        !settings ? <Skeleton className="h-32 w-full" /> : (
+          <div className="space-y-4">
+            <div className="grid grid-cols-3 gap-4">
+              <StatCard title="Storage" value={`${(settings.storage_bytes / 1024).toFixed(0)} KB`} />
+              <StatCard title="Skills" value={String(settings.skills.length)} />
+              <StatCard title="Plugins" value={String(settings.plugins.length)} />
+            </div>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-medium">Settings</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <pre className="text-xs font-mono bg-muted/50 p-3 rounded max-h-60 overflow-y-auto whitespace-pre-wrap">
+                  {JSON.stringify(settings.settings, null, 2)}
+                </pre>
+              </CardContent>
+            </Card>
+
+            {settings.skills.length > 0 && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium">Skills ({settings.skills.length})</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {settings.skills.map((s, i) => (
+                    <div key={i} className="flex items-start gap-2">
+                      <div className="w-2 h-2 rounded-full bg-amber-500 mt-1.5 flex-shrink-0" />
+                      <div>
+                        <p className="text-sm font-medium font-mono">{s.name}</p>
+                        {s.description && <p className="text-xs text-muted-foreground">{s.description}</p>}
+                      </div>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            )}
+
+            {settings.plugins.length > 0 && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium">Plugins ({settings.plugins.length})</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Plugin</TableHead>
+                        <TableHead>Scope</TableHead>
+                        <TableHead>Version</TableHead>
+                        <TableHead>Installed</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {settings.plugins.map((p, i) => (
+                        <TableRow key={i}>
+                          <TableCell className="text-sm font-mono">{p.name}</TableCell>
+                          <TableCell className="text-sm">{p.scope}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground">{p.version || '-'}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground">{p.installedAt ? new Date(p.installedAt).toLocaleDateString() : '-'}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
+// ─── Token Cache Breakdown ──────────────────────────────────────────────────
+
+function TokenCacheBar({ stats }: { stats: CombinedStats }) {
+  const totalInput = stats.agents.reduce((s, a) => s + a.totalInputTokens, 0);
+  const totalOutput = stats.agents.reduce((s, a) => s + a.totalOutputTokens, 0);
+  const totalTokens = totalInput + totalOutput;
+  if (totalTokens === 0) return null;
+
+  const inputPct = (totalInput / totalTokens) * 100;
+  const outputPct = (totalOutput / totalTokens) * 100;
+
+  return (
+    <div className="flex items-center gap-3 text-xs">
+      <div className="flex-1 h-3 rounded-full overflow-hidden bg-muted flex">
+        <div className="bg-blue-500 h-full" style={{ width: `${inputPct}%` }} title={`Input: ${formatTokens(totalInput)}`} />
+        <div className="bg-orange-500 h-full" style={{ width: `${outputPct}%` }} title={`Output: ${formatTokens(totalOutput)}`} />
+      </div>
+      <div className="flex gap-3 text-muted-foreground flex-shrink-0">
+        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500 inline-block" />input: {formatTokens(totalInput)}</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-orange-500 inline-block" />output: {formatTokens(totalOutput)}</span>
+      </div>
+    </div>
+  );
+}
+
 // ─── Shared Components ────────────────────────────────────────────────────────
 
 function StatCard({ title, value, accent }: { title: string; value: string; accent?: 'red' | 'yellow' | 'green' }) {
@@ -1452,6 +1827,7 @@ export const CodingAgentsPage: React.FC = () => {
             <TabsTrigger value="efficiency">Efficiency</TabsTrigger>
             <TabsTrigger value="tools">Tools</TabsTrigger>
             <TabsTrigger value="advanced">Advanced</TabsTrigger>
+            <TabsTrigger value="workspace">Workspace</TabsTrigger>
           </TabsList>
 
           <TabsContent value="overview" className="mt-4">
@@ -1477,6 +1853,9 @@ export const CodingAgentsPage: React.FC = () => {
           </TabsContent>
           <TabsContent value="advanced" className="mt-4">
             <AdvancedTab advanced={advanced} failurePatterns={failurePatterns} loading={activeTab === 'advanced' && !advanced} />
+          </TabsContent>
+          <TabsContent value="workspace" className="mt-4">
+            <WorkspaceTab />
           </TabsContent>
         </Tabs>
       )}
