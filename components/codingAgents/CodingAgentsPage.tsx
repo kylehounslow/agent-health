@@ -303,6 +303,53 @@ function formatPct(n: number): string {
 
 type DateRangePreset = 'today' | '7d' | '30d' | 'all';
 
+// ─── Sortable Table Utilities ────────────────────────────────────────────────
+
+type SortDir = 'asc' | 'desc';
+interface SortState<K extends string = string> { key: K; dir: SortDir }
+
+function useSort<K extends string>(defaultKey: K, defaultDir: SortDir = 'desc') {
+  const [sort, setSort] = useState<SortState<K>>({ key: defaultKey, dir: defaultDir });
+  const toggle = (key: K) => {
+    setSort(prev => prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' });
+  };
+  return { sort, toggle };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function sortRows<T extends Record<string, any>>(rows: T[], key: string, dir: SortDir, accessor?: (row: T, key: string) => number | string): T[] {
+  const sorted = [...rows].sort((a, b) => {
+    const va = accessor ? accessor(a, key) : a[key];
+    const vb = accessor ? accessor(b, key) : b[key];
+    if (typeof va === 'number' && typeof vb === 'number') return va - vb;
+    return String(va).localeCompare(String(vb));
+  });
+  return dir === 'desc' ? sorted.reverse() : sorted;
+}
+
+function SortableHead({ label, sortKey, sort, onSort, className }: {
+  label: string;
+  sortKey: string;
+  sort: SortState;
+  onSort: (key: string) => void;
+  className?: string;
+}) {
+  const active = sort.key === sortKey;
+  return (
+    <TableHead
+      className={`cursor-pointer select-none hover:text-foreground ${className ?? ''}`}
+      onClick={() => onSort(sortKey)}
+    >
+      <span className="inline-flex items-center gap-1">
+        {label}
+        <span className={`text-xs ${active ? 'text-foreground' : 'text-muted-foreground/40'}`}>
+          {active ? (sort.dir === 'asc' ? '\u25B2' : '\u25BC') : '\u25BC'}
+        </span>
+      </span>
+    </TableHead>
+  );
+}
+
 // Shared chart styling (matches app-wide recharts patterns)
 const TOOLTIP_STYLE = {
   contentStyle: {
@@ -644,7 +691,11 @@ function SessionDetailPanel({ session, onClose }: { session: Session; onClose: (
             </div>
           </>
         ) : (
-          <p className="text-sm text-muted-foreground">No conversation data available for this session.</p>
+          <div className="text-center py-8">
+            <div className="text-2xl mb-2 opacity-20">[...]</div>
+            <p className="text-sm text-muted-foreground">No conversation data available</p>
+            <p className="text-xs text-muted-foreground/70 mt-1">The session JSONL file may have been removed or is in an unsupported format.</p>
+          </div>
         )}
       </div>
     </div>
@@ -664,6 +715,7 @@ function SessionsTab({ range, loading: initialLoading, initialProject }: { range
   const [searchInput, setSearchInput] = useState('');
   const [loading, setLoading] = useState(initialLoading);
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
+  const { sort: sessSort, toggle: toggleSessSort } = useSort<string>('start_time');
   const pageSize = 50;
 
   useEffect(() => { if (initialProject) setProjectFilter(initialProject); }, [initialProject]);
@@ -730,19 +782,24 @@ function SessionsTab({ range, loading: initialLoading, initialProject }: { range
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Agent</TableHead>
+                  <SortableHead label="Agent" sortKey="agent" sort={sessSort} onSort={toggleSessSort} />
                   <TableHead>First Prompt</TableHead>
-                  <TableHead>Project</TableHead>
-                  <TableHead className="text-right">Duration</TableHead>
-                  <TableHead className="text-right">Messages</TableHead>
-                  <TableHead className="text-right">Tokens</TableHead>
-                  <TableHead className="text-right">Cost</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Date</TableHead>
+                  <SortableHead label="Project" sortKey="project_path" sort={sessSort} onSort={toggleSessSort} />
+                  <SortableHead label="Duration" sortKey="duration_minutes" sort={sessSort} onSort={toggleSessSort} className="text-right" />
+                  <SortableHead label="Messages" sortKey="messages" sort={sessSort} onSort={toggleSessSort} className="text-right" />
+                  <SortableHead label="Tokens" sortKey="tokens" sort={sessSort} onSort={toggleSessSort} className="text-right" />
+                  <SortableHead label="Cost" sortKey="estimated_cost" sort={sessSort} onSort={toggleSessSort} className="text-right" />
+                  <SortableHead label="Status" sortKey="session_completed" sort={sessSort} onSort={toggleSessSort} />
+                  <SortableHead label="Date" sortKey="start_time" sort={sessSort} onSort={toggleSessSort} />
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {sessions.map(s => (
+                {sortRows(sessions, sessSort.key, sessSort.dir, (s, k) => {
+                  if (k === 'messages') return s.user_message_count + s.assistant_message_count;
+                  if (k === 'tokens') return s.input_tokens + s.output_tokens;
+                  if (k === 'session_completed') return s.session_completed ? 1 : 0;
+                  return s[k as keyof Session] as number | string;
+                }).map(s => (
                   <TableRow key={`${s.agent}-${s.session_id}`} className="cursor-pointer hover:bg-muted/50" onClick={() => setSelectedSession(s)}>
                     <TableCell>
                       <Badge variant="outline" style={{ borderColor: AGENT_COLORS[s.agent], color: AGENT_COLORS[s.agent] }}>
@@ -773,6 +830,13 @@ function SessionsTab({ range, loading: initialLoading, initialProject }: { range
                 ))}
               </TableBody>
             </Table>
+            {sessions.length === 0 && (
+              <div className="text-center py-8">
+                <div className="text-2xl mb-2 opacity-20">&gt;_</div>
+                <p className="text-sm text-muted-foreground">No sessions found</p>
+                <p className="text-xs text-muted-foreground/70 mt-1">Try adjusting your filters or date range.</p>
+              </div>
+            )}
           </Card>
 
           {/* Pagination */}
@@ -1101,6 +1165,7 @@ function successRateColor(rate: number): string {
 }
 
 function ToolsTab({ tools, loading }: { tools: ToolsData | null; loading: boolean }) {
+  const { sort: toolSort, toggle: toggleToolSort } = useSort<string>('total_calls');
   if (loading || !tools) return <TabSkeleton label="Loading tool analytics..." cards={3} charts={1} table />;
 
   const byCategory = new Map<string, number>();
@@ -1149,16 +1214,16 @@ function ToolsTab({ tools, loading }: { tools: ToolsData | null; loading: boolea
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Agent</TableHead>
-                  <TableHead>Tool</TableHead>
-                  <TableHead>Category</TableHead>
-                  <TableHead className="text-right">Calls</TableHead>
-                  <TableHead className="text-right">Errors</TableHead>
-                  <TableHead className="text-right">Success %</TableHead>
+                  <SortableHead label="Agent" sortKey="agent" sort={toolSort} onSort={toggleToolSort} />
+                  <SortableHead label="Tool" sortKey="name" sort={toolSort} onSort={toggleToolSort} />
+                  <SortableHead label="Category" sortKey="category" sort={toolSort} onSort={toggleToolSort} />
+                  <SortableHead label="Calls" sortKey="total_calls" sort={toolSort} onSort={toggleToolSort} className="text-right" />
+                  <SortableHead label="Errors" sortKey="error_count" sort={toolSort} onSort={toggleToolSort} className="text-right" />
+                  <SortableHead label="Success %" sortKey="success_rate" sort={toolSort} onSort={toggleToolSort} className="text-right" />
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {tools.tools.slice(0, 20).map((t, i) => (
+                {sortRows(tools.tools, toolSort.key, toolSort.dir).slice(0, 20).map((t, i) => (
                   <TableRow key={i}>
                     <TableCell>
                       <Badge variant="outline" style={{ borderColor: AGENT_COLORS[t.agent], color: AGENT_COLORS[t.agent] }} className="text-xs">
@@ -1226,6 +1291,9 @@ function AdvancedTab({ advanced, failurePatterns, loading }: {
   failurePatterns: FailurePattern[] | null;
   loading: boolean;
 }) {
+  const { sort: mcpSort, toggle: toggleMcpSort } = useSort<string>('total_calls');
+  const { sort: fpSort, toggle: toggleFpSort } = useSort<string>('occurrences');
+
   if (loading || !advanced) return <TabSkeleton label="Loading advanced analytics..." cards={3} charts={2} table />;
 
   const { mcp, hourly_effectiveness, duration_distribution, conversation_depth } = advanced;
@@ -1242,16 +1310,16 @@ function AdvancedTab({ advanced, failurePatterns, loading }: {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Server</TableHead>
-                  <TableHead>Agent</TableHead>
-                  <TableHead className="text-right">Calls</TableHead>
-                  <TableHead className="text-right">Errors</TableHead>
-                  <TableHead className="text-right">Success %</TableHead>
-                  <TableHead className="text-right">Sessions</TableHead>
+                  <SortableHead label="Server" sortKey="server" sort={mcpSort} onSort={toggleMcpSort} />
+                  <SortableHead label="Agent" sortKey="agent" sort={mcpSort} onSort={toggleMcpSort} />
+                  <SortableHead label="Calls" sortKey="total_calls" sort={mcpSort} onSort={toggleMcpSort} className="text-right" />
+                  <SortableHead label="Errors" sortKey="error_count" sort={mcpSort} onSort={toggleMcpSort} className="text-right" />
+                  <SortableHead label="Success %" sortKey="success_rate" sort={mcpSort} onSort={toggleMcpSort} className="text-right" />
+                  <SortableHead label="Sessions" sortKey="session_count" sort={mcpSort} onSort={toggleMcpSort} className="text-right" />
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {mcp.servers.map((s, i) => (
+                {sortRows(mcp.servers, mcpSort.key, mcpSort.dir).map((s, i) => (
                   <TableRow key={i}>
                     <TableCell className="font-mono text-sm">{s.server}</TableCell>
                     <TableCell>
@@ -1359,14 +1427,14 @@ function AdvancedTab({ advanced, failurePatterns, loading }: {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Agent</TableHead>
-                  <TableHead>Tool</TableHead>
-                  <TableHead className="text-right">Occurrences</TableHead>
-                  <TableHead className="text-right">Sessions Affected</TableHead>
+                  <SortableHead label="Agent" sortKey="agent" sort={fpSort} onSort={toggleFpSort} />
+                  <SortableHead label="Tool" sortKey="tool" sort={fpSort} onSort={toggleFpSort} />
+                  <SortableHead label="Occurrences" sortKey="occurrences" sort={fpSort} onSort={toggleFpSort} className="text-right" />
+                  <SortableHead label="Sessions Affected" sortKey="sessions" sort={fpSort} onSort={toggleFpSort} className="text-right" />
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {failurePatterns.slice(0, 10).map((fp, i) => (
+                {sortRows(failurePatterns, fpSort.key, fpSort.dir).slice(0, 10).map((fp, i) => (
                   <TableRow key={i}>
                     <TableCell>
                       <Badge variant="outline" style={{ borderColor: AGENT_COLORS[fp.agent], color: AGENT_COLORS[fp.agent] }} className="text-xs">
@@ -1405,6 +1473,9 @@ function WorkspaceTab() {
   const [kiroSection, setKiroSection] = useState<'mcp' | 'agents' | 'powers' | 'extensions' | 'settings'>('mcp');
   const [kiroWorkspace, setKiroWorkspace] = useState<KiroWorkspace | null>(null);
   const [kiroLoaded, setKiroLoaded] = useState(false);
+  const { sort: taskSort, toggle: toggleTaskSort } = useSort<string>('status');
+  const { sort: kiroMcpSort, toggle: toggleKiroMcpSort } = useSort<string>('name', 'asc');
+  const { sort: kiroExtSort, toggle: toggleKiroExtSort } = useSort<string>('name', 'asc');
 
   // Claude Code data loading
   useEffect(() => {
@@ -1495,7 +1566,7 @@ function WorkspaceTab() {
       {section === 'active' && (
         !activeSessions ? <TabSkeleton label="Checking active sessions..." cards={2} /> :
         activeSessions.length === 0 ? (
-          <Card><CardContent className="pt-6 text-center text-muted-foreground text-sm">No active sessions (last 30 minutes)</CardContent></Card>
+          <EmptyState icon="~" title="No active sessions" description="No Claude Code sessions have been active in the last 30 minutes." />
         ) : (
           <div className="space-y-2">
             <span className="text-sm text-muted-foreground">{activeSessions.length} active session{activeSessions.length > 1 ? 's' : ''}</span>
@@ -1522,7 +1593,7 @@ function WorkspaceTab() {
       {section === 'memory' && (
         !memoryProjects ? <TabSkeleton label="Loading memory files..." cards={3} /> :
         memoryProjects.length === 0 ? (
-          <Card><CardContent className="pt-6 text-center text-muted-foreground text-sm">No memory files found</CardContent></Card>
+          <EmptyState icon="[]" title="No memory files" description="Claude Code memory files will appear here once created. Memory helps Claude remember context across sessions." />
         ) : (
           <div className="space-y-4">
             {memoryProjects.map(proj => (
@@ -1584,7 +1655,7 @@ function WorkspaceTab() {
       {section === 'plans' && (
         !plans ? <TabSkeleton label="Loading plans..." cards={2} /> :
         plans.length === 0 ? (
-          <Card><CardContent className="pt-6 text-center text-muted-foreground text-sm">No plans found</CardContent></Card>
+          <EmptyState icon="{ }" title="No plans" description="Plans are created by Claude Code when working on complex tasks. They'll appear here automatically." />
         ) : (
           <div className="flex gap-4 min-h-[500px]">
             {/* Left pane — plan list */}
@@ -1629,7 +1700,7 @@ function WorkspaceTab() {
       {section === 'tasks' && (
         !tasks ? <TabSkeleton label="Loading tasks..." table /> :
         tasks.length === 0 ? (
-          <Card><CardContent className="pt-6 text-center text-muted-foreground text-sm">No tasks found</CardContent></Card>
+          <EmptyState icon="#" title="No tasks" description="Tasks are created by Claude Code to track work progress. Start a coding session to see tasks here." />
         ) : (
           <div className="space-y-2">
             <div className="flex gap-4 text-sm text-muted-foreground">
@@ -1641,14 +1712,17 @@ function WorkspaceTab() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-12">ID</TableHead>
-                    <TableHead>Task</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Owner</TableHead>
+                    <SortableHead label="ID" sortKey="id" sort={taskSort} onSort={toggleTaskSort} className="w-12" />
+                    <SortableHead label="Task" sortKey="subject" sort={taskSort} onSort={toggleTaskSort} />
+                    <SortableHead label="Status" sortKey="status" sort={taskSort} onSort={toggleTaskSort} />
+                    <SortableHead label="Owner" sortKey="owner" sort={taskSort} onSort={toggleTaskSort} />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {tasks.filter(t => t.status !== 'deleted').map(t => (
+                  {sortRows(tasks.filter(t => t.status !== 'deleted'), taskSort.key, taskSort.dir, (t, k) => {
+                    if (k === 'owner') return t.owner ?? '';
+                    return t[k as keyof TaskItem] as string;
+                  }).map(t => (
                     <TableRow key={t.id}>
                       <TableCell className="text-sm text-muted-foreground">#{t.id}</TableCell>
                       <TableCell>
@@ -1758,7 +1832,7 @@ function WorkspaceTab() {
           {/* MCP Servers */}
           {kiroSection === 'mcp' && (
             kiroWorkspace.mcpServers.length === 0 ? (
-              <Card><CardContent className="pt-6 text-center text-muted-foreground text-sm">No MCP servers configured</CardContent></Card>
+              <EmptyState icon="<>" title="No MCP servers" description="Configure MCP servers in ~/.kiro/settings/mcp.json to connect external tools." />
             ) : (
               <Card>
                 <CardHeader className="pb-2">
@@ -1768,14 +1842,17 @@ function WorkspaceTab() {
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Server</TableHead>
-                        <TableHead>Command</TableHead>
-                        <TableHead>Status</TableHead>
-                        <TableHead className="text-right">Disabled Tools</TableHead>
+                        <SortableHead label="Server" sortKey="name" sort={kiroMcpSort} onSort={toggleKiroMcpSort} />
+                        <SortableHead label="Command" sortKey="command" sort={kiroMcpSort} onSort={toggleKiroMcpSort} />
+                        <SortableHead label="Status" sortKey="disabled" sort={kiroMcpSort} onSort={toggleKiroMcpSort} />
+                        <SortableHead label="Disabled Tools" sortKey="disabledToolCount" sort={kiroMcpSort} onSort={toggleKiroMcpSort} className="text-right" />
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {kiroWorkspace.mcpServers.map(s => (
+                      {sortRows(kiroWorkspace.mcpServers, kiroMcpSort.key, kiroMcpSort.dir, (s, k) => {
+                        if (k === 'disabled') return s.disabled ? 1 : 0;
+                        return s[k as keyof KiroMcpServer] as string | number;
+                      }).map(s => (
                         <TableRow key={s.name}>
                           <TableCell className="text-sm font-mono font-medium">{s.name}</TableCell>
                           <TableCell className="text-sm text-muted-foreground font-mono">{s.command}</TableCell>
@@ -1797,7 +1874,7 @@ function WorkspaceTab() {
           {/* Agents */}
           {kiroSection === 'agents' && (
             kiroWorkspace.agents.length === 0 ? (
-              <Card><CardContent className="pt-6 text-center text-muted-foreground text-sm">No agents configured</CardContent></Card>
+              <EmptyState icon="@" title="No agents configured" description="Add agent configurations in ~/.kiro/agents/ to customize Kiro's behavior." />
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {kiroWorkspace.agents.map(a => (
@@ -1820,7 +1897,7 @@ function WorkspaceTab() {
           {/* Powers */}
           {kiroSection === 'powers' && (
             kiroWorkspace.powers.length === 0 ? (
-              <Card><CardContent className="pt-6 text-center text-muted-foreground text-sm">No powers installed</CardContent></Card>
+              <EmptyState icon="+" title="No powers installed" description="Install powers from the Kiro registry to extend functionality." />
             ) : (
               <Card>
                 <CardHeader className="pb-2">
@@ -1851,7 +1928,7 @@ function WorkspaceTab() {
           {/* Extensions */}
           {kiroSection === 'extensions' && (
             kiroWorkspace.extensions.length === 0 ? (
-              <Card><CardContent className="pt-6 text-center text-muted-foreground text-sm">No extensions found</CardContent></Card>
+              <EmptyState icon="[]" title="No extensions found" description="Kiro extensions will appear here once installed." />
             ) : (
               <Card>
                 <CardHeader className="pb-2">
@@ -1861,13 +1938,13 @@ function WorkspaceTab() {
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Extension</TableHead>
-                        <TableHead>ID</TableHead>
-                        <TableHead>Version</TableHead>
+                        <SortableHead label="Extension" sortKey="name" sort={kiroExtSort} onSort={toggleKiroExtSort} />
+                        <SortableHead label="ID" sortKey="id" sort={kiroExtSort} onSort={toggleKiroExtSort} />
+                        <SortableHead label="Version" sortKey="version" sort={kiroExtSort} onSort={toggleKiroExtSort} />
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {kiroWorkspace.extensions.map(e => (
+                      {sortRows(kiroWorkspace.extensions, kiroExtSort.key, kiroExtSort.dir).map(e => (
                         <TableRow key={`${e.id}-${e.version}`}>
                           <TableCell className="text-sm font-medium">{e.name}</TableCell>
                           <TableCell className="text-sm text-muted-foreground font-mono">{e.id}</TableCell>
@@ -1958,6 +2035,18 @@ function StatCard({ title, value, accent }: { title: string; value: string; acce
       <CardContent className="pt-4 pb-3">
         <p className="text-xs text-muted-foreground">{title}</p>
         <p className={`text-2xl font-bold ${colorClass}`}>{value}</p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function EmptyState({ title, description, icon }: { title: string; description?: string; icon?: string }) {
+  return (
+    <Card>
+      <CardContent className="pt-10 pb-10 text-center">
+        <div className="text-3xl mb-3 opacity-30">{icon ?? '--'}</div>
+        <p className="text-sm font-medium text-muted-foreground">{title}</p>
+        {description && <p className="text-xs text-muted-foreground/70 mt-1 max-w-sm mx-auto">{description}</p>}
       </CardContent>
     </Card>
   );
@@ -2143,12 +2232,18 @@ export const CodingAgentsPage: React.FC = () => {
 
       {error && agents.length === 0 ? (
         <Card>
-          <CardContent className="pt-6">
-            <div className="text-center py-8">
-              <p className="text-muted-foreground">{error}</p>
-              <p className="text-sm text-muted-foreground mt-2">
-                Supported agents: Claude Code (~/.claude), Kiro (~/.kiro), Codex CLI (~/.codex)
+          <CardContent className="pt-10 pb-10">
+            <div className="text-center">
+              <div className="text-4xl mb-4 opacity-20">&gt;_</div>
+              <p className="text-lg font-medium text-muted-foreground mb-2">No coding agents detected</p>
+              <p className="text-sm text-muted-foreground max-w-md mx-auto mb-4">
+                Install a coding agent to start tracking your AI-assisted development sessions, costs, and productivity.
               </p>
+              <div className="flex justify-center gap-6 text-xs text-muted-foreground/70">
+                <span>Claude Code <span className="font-mono">~/.claude</span></span>
+                <span>Kiro <span className="font-mono">~/.kiro</span></span>
+                <span>Codex CLI <span className="font-mono">~/.codex</span></span>
+              </div>
             </div>
           </CardContent>
         </Card>
