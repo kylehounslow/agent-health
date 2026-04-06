@@ -4,8 +4,9 @@
  */
 
 /**
- * API routes for Claude Code workspace features.
- * Memory viewer/editor, plans, tasks, settings, skills, plugins, active sessions.
+ * API routes for coding agent workspace features.
+ * Claude Code: Memory viewer/editor, plans, tasks, settings, skills, plugins, active sessions.
+ * Kiro: Settings, MCP servers, agents, powers, extensions, recent commands.
  */
 
 import { Router, Request, Response } from 'express';
@@ -17,6 +18,7 @@ import {
   getSettings,
   getActiveSessions,
 } from '../services/codingAgents/readers/claudeCodeWorkspace';
+import { getKiroWorkspace } from '../services/codingAgents/readers/kiroWorkspace';
 
 const router = Router();
 
@@ -84,6 +86,16 @@ router.get('/api/coding-agents/claude-code/active-sessions', async (_req: Reques
   try {
     const sessions = await getActiveSessions();
     res.json({ sessions, count: sessions.length });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/** GET /api/coding-agents/kiro/workspace */
+router.get('/api/coding-agents/kiro/workspace', async (_req: Request, res: Response) => {
+  try {
+    const data = await getKiroWorkspace();
+    res.json(data);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

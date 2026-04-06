@@ -16,6 +16,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 const AGENT_COLORS: Record<string, string> = {
   'claude-code': '#f97316',
@@ -208,7 +210,7 @@ interface FailurePattern {
   sessions: number;
   agent: string;
 }
-// Workspace (Claude Code specific)
+// Workspace types
 interface MemoryFile {
   name: string;
   description: string;
@@ -248,6 +250,30 @@ interface ActiveSessionInfo {
   last_activity_ago: string;
   model?: string;
 }
+// Kiro workspace
+interface KiroMcpServer {
+  name: string;
+  command: string;
+  disabled: boolean;
+  disabledToolCount: number;
+}
+interface KiroAgent {
+  name: string;
+  description: string;
+  hasMcpServers: boolean;
+  hasHooks: boolean;
+  resourceCount: number;
+}
+interface KiroPower { name: string; registryId: string }
+interface KiroExtension { id: string; name: string; version: string }
+interface KiroWorkspace {
+  settings: Record<string, unknown>;
+  mcpServers: KiroMcpServer[];
+  agents: KiroAgent[];
+  powers: KiroPower[];
+  extensions: KiroExtension[];
+  recentCommands: string[];
+}
 
 // ─── Formatters ──────────────────────────────────────────────────────────────
 
@@ -276,6 +302,22 @@ function formatPct(n: number): string {
 }
 
 type DateRangePreset = 'today' | '7d' | '30d' | 'all';
+
+// Shared chart styling (matches app-wide recharts patterns)
+const TOOLTIP_STYLE = {
+  contentStyle: {
+    backgroundColor: 'hsl(var(--card))',
+    border: '1px solid hsl(var(--border))',
+    borderRadius: '6px',
+  },
+  labelStyle: { color: 'hsl(var(--foreground))' },
+};
+const AXIS_PROPS = {
+  tick: { fontSize: 12 },
+  className: 'text-muted-foreground',
+  tickLine: false as const,
+  axisLine: false as const,
+};
 
 function getDateRange(preset: DateRangePreset): { from?: string; to?: string } {
   if (preset === 'all') return {};
@@ -422,9 +464,6 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset }: { stats: Combi
       {/* Today summary card — shown when "Today" range is selected */}
       {rangePreset === 'today' && <TodaySummary stats={stats} />}
 
-      {/* Insights banner */}
-      <InsightsBanner insights={stats.insights} onTabChange={onTabChange} />
-
       {/* Key metric cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         <StatCard title="Total Sessions" value={String(stats.totalSessions)} />
@@ -476,12 +515,12 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset }: { stats: Combi
           <CardContent>
             <ResponsiveContainer width="100%" height={200}>
               <PieChart>
-                <Pie data={agentPieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} label={({ name, value }) => `${name}: ${value}`}>
+                <Pie data={agentPieData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={40} outerRadius={80} paddingAngle={2} label={({ name, value }) => `${name}: ${value}`}>
                   {agentPieData.map((entry, i) => (
                     <Cell key={i} fill={entry.fill} />
                   ))}
                 </Pie>
-                <Tooltip />
+                <Tooltip {...TOOLTIP_STYLE} />
               </PieChart>
             </ResponsiveContainer>
           </CardContent>
@@ -493,17 +532,20 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset }: { stats: Combi
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={recentActivity}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="date" tickFormatter={(d: string) => d.slice(5)} fontSize={11} />
-                <YAxis fontSize={11} />
-                <Tooltip labelFormatter={(d: string) => d} />
-                <Bar dataKey="sessionCount" fill="#60a5fa" name="Sessions" />
+              <BarChart data={recentActivity} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />
+                <XAxis dataKey="date" {...AXIS_PROPS} tickFormatter={(d: string) => d.slice(5)} />
+                <YAxis {...AXIS_PROPS} />
+                <Tooltip {...TOOLTIP_STYLE} labelFormatter={(d: string) => d} />
+                <Bar dataKey="sessionCount" fill="#3b82f6" name="Sessions" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
         </Card>
       </div>
+
+      {/* Insights — below charts */}
+      <InsightsBanner insights={stats.insights} onTabChange={onTabChange} />
     </div>
   );
 }
@@ -513,6 +555,8 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset }: { stats: Combi
 function SessionDetailPanel({ session, onClose }: { session: Session; onClose: () => void }) {
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [msgSearch, setMsgSearch] = useState('');
+  const [roleFilter, setRoleFilter] = useState<string>('all');
 
   useEffect(() => {
     setLoading(true);
@@ -522,9 +566,16 @@ function SessionDetailPanel({ session, onClose }: { session: Session; onClose: (
       .finally(() => setLoading(false));
   }, [session.agent, session.session_id]);
 
+  const filteredMessages = (detail?.messages ?? []).filter(msg => {
+    if (roleFilter !== 'all' && msg.role !== roleFilter) return false;
+    if (msgSearch && !msg.text.toLowerCase().includes(msgSearch.toLowerCase()) &&
+        !(msg.toolName && msg.toolName.toLowerCase().includes(msgSearch.toLowerCase()))) return false;
+    return true;
+  });
+
   return (
     <div className="fixed inset-y-0 right-0 w-full max-w-2xl bg-background border-l shadow-xl z-50 overflow-y-auto">
-      <div className="sticky top-0 bg-background border-b p-4 flex items-center justify-between">
+      <div className="sticky top-0 bg-background border-b p-4 flex items-center justify-between z-10">
         <div>
           <h3 className="font-semibold text-sm">Session Detail</h3>
           <p className="text-xs text-muted-foreground">
@@ -548,24 +599,50 @@ function SessionDetailPanel({ session, onClose }: { session: Session; onClose: (
         </div>
 
         {loading ? (
-          <Skeleton className="h-40 w-full" />
+          <TabSkeleton label="Loading conversation..." cards={3} />
         ) : detail?.messages && detail.messages.length > 0 ? (
-          <div className="space-y-2">
-            {detail.messages.map((msg, i) => (
-              <div key={i} className={`rounded-md p-3 text-sm ${
-                msg.role === 'user' ? 'bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800' :
-                msg.role === 'tool_result' ? `border ${msg.isError ? 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800' : 'bg-gray-50 dark:bg-gray-900/30 border-gray-200 dark:border-gray-700'}` :
-                'bg-muted/50 border border-border'
-              }`}>
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-xs font-medium text-muted-foreground uppercase">{msg.role}</span>
-                  {msg.toolName && <Badge variant="secondary" className="text-xs">{msg.toolName}</Badge>}
-                  {msg.timestamp && <span className="text-xs text-muted-foreground ml-auto">{new Date(msg.timestamp).toLocaleTimeString()}</span>}
+          <>
+            {/* Search & filter for conversation */}
+            <div className="flex items-center gap-2 mb-3 sticky top-[73px] bg-background py-2 z-10">
+              <input
+                className="border rounded px-3 py-1.5 text-sm flex-1 bg-background"
+                placeholder="Search messages..."
+                value={msgSearch}
+                onChange={e => setMsgSearch(e.target.value)}
+              />
+              <Select value={roleFilter} onValueChange={setRoleFilter}>
+                <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Roles</SelectItem>
+                  <SelectItem value="user">User</SelectItem>
+                  <SelectItem value="assistant">Assistant</SelectItem>
+                  <SelectItem value="tool_result">Tool Result</SelectItem>
+                </SelectContent>
+              </Select>
+              <span className="text-xs text-muted-foreground whitespace-nowrap">
+                {filteredMessages.length}/{detail.messages.length}
+              </span>
+            </div>
+            <div className="space-y-2">
+              {filteredMessages.map((msg, i) => (
+                <div key={i} className={`rounded-md p-3 text-sm ${
+                  msg.role === 'user' ? 'bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800' :
+                  msg.role === 'tool_result' ? `border ${msg.isError ? 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800' : 'bg-gray-50 dark:bg-gray-900/30 border-gray-200 dark:border-gray-700'}` :
+                  'bg-muted/50 border border-border'
+                }`}>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xs font-medium text-muted-foreground uppercase">{msg.role}</span>
+                    {msg.toolName && <Badge variant="secondary" className="text-xs">{msg.toolName}</Badge>}
+                    {msg.timestamp && <span className="text-xs text-muted-foreground ml-auto">{new Date(msg.timestamp).toLocaleTimeString()}</span>}
+                  </div>
+                  <pre className="whitespace-pre-wrap text-xs font-mono break-all">{msg.text}</pre>
                 </div>
-                <pre className="whitespace-pre-wrap text-xs font-mono break-all">{msg.text}</pre>
-              </div>
-            ))}
-          </div>
+              ))}
+              {filteredMessages.length === 0 && (
+                <p className="text-sm text-muted-foreground text-center py-4">No messages match your search.</p>
+              )}
+            </div>
+          </>
         ) : (
           <p className="text-sm text-muted-foreground">No conversation data available for this session.</p>
         )}
@@ -576,17 +653,20 @@ function SessionDetailPanel({ session, onClose }: { session: Session; onClose: (
 
 // ─── Sessions Tab ─────────────────────────────────────────────────────────────
 
-function SessionsTab({ range, loading: initialLoading }: { range: { from?: string; to?: string }; loading: boolean }) {
+function SessionsTab({ range, loading: initialLoading, initialProject }: { range: { from?: string; to?: string }; loading: boolean; initialProject?: string }) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
   const [agentFilter, setAgentFilter] = useState<string>('all');
   const [completedFilter, setCompletedFilter] = useState<string>('all');
+  const [projectFilter, setProjectFilter] = useState<string>(initialProject ?? '');
   const [search, setSearch] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const [loading, setLoading] = useState(initialLoading);
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const pageSize = 50;
+
+  useEffect(() => { if (initialProject) setProjectFilter(initialProject); }, [initialProject]);
 
   const loadSessions = useCallback(async () => {
     setLoading(true);
@@ -594,13 +674,14 @@ function SessionsTab({ range, loading: initialLoading }: { range: { from?: strin
       const extra: Record<string, string> = { limit: String(pageSize), offset: String(page * pageSize) };
       if (agentFilter !== 'all') extra.agent = agentFilter;
       if (completedFilter !== 'all') extra.completed = completedFilter;
+      if (projectFilter) extra.project = projectFilter;
       if (search) extra.search = search;
       const data = await fetchJson<SessionsResponse>(buildQuery('/api/coding-agents/sessions', range, extra));
       setSessions(data.sessions);
       setTotal(data.total);
     } catch { /* ignore */ }
     setLoading(false);
-  }, [page, agentFilter, completedFilter, search, range]);
+  }, [page, agentFilter, completedFilter, projectFilter, search, range]);
 
   useEffect(() => { loadSessions(); }, [loadSessions]);
 
@@ -634,10 +715,16 @@ function SessionsTab({ range, loading: initialLoading }: { range: { from?: strin
             <SelectItem value="false">Abandoned</SelectItem>
           </SelectContent>
         </Select>
+        {projectFilter && (
+          <Badge variant="secondary" className="text-xs flex items-center gap-1">
+            Project: {projectFilter.split('/').pop()}
+            <button onClick={() => { setProjectFilter(''); setPage(0); }} className="ml-1 hover:text-foreground">&times;</button>
+          </Badge>
+        )}
         <span className="text-sm text-muted-foreground">{total} sessions</span>
       </div>
 
-      {loading ? <Skeleton className="h-64 w-full" /> : (
+      {loading ? <TabSkeleton label="Loading sessions..." table /> : (
         <>
           <Card>
             <Table>
@@ -731,12 +818,12 @@ function CostTrendChart({ dailyCosts }: { dailyCosts: DailyCost[] }) {
       </CardHeader>
       <CardContent>
         <ResponsiveContainer width="100%" height={250}>
-          <LineChart data={chartData}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="date" tickFormatter={(d: string) => d.slice(5)} fontSize={11} />
-            <YAxis tickFormatter={(v: number) => `$${v.toFixed(2)}`} fontSize={11} />
-            <Tooltip formatter={(v: number) => formatCost(v)} labelFormatter={(d: string) => d} />
-            <Legend />
+          <LineChart data={chartData} margin={{ top: 10, right: 10, left: 10, bottom: 10 }}>
+            <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+            <XAxis dataKey="date" {...AXIS_PROPS} tickFormatter={(d: string) => d.slice(5)} />
+            <YAxis {...AXIS_PROPS} tickFormatter={(v: number) => `$${v.toFixed(2)}`} width={60} />
+            <Tooltip {...TOOLTIP_STYLE} formatter={(v: number) => formatCost(v)} labelFormatter={(d: string) => d} />
+            <Legend wrapperStyle={{ paddingTop: '10px' }} formatter={(value) => <span className="text-sm text-muted-foreground">{value}</span>} />
             {[...agentsInData].map(agent => (
               <Line
                 key={agent}
@@ -745,7 +832,8 @@ function CostTrendChart({ dailyCosts }: { dailyCosts: DailyCost[] }) {
                 name={AGENT_LABELS[agent] ?? agent}
                 stroke={AGENT_COLORS[agent] ?? '#6b7280'}
                 strokeWidth={2}
-                dot={false}
+                dot={{ fill: AGENT_COLORS[agent] ?? '#6b7280', strokeWidth: 2, r: 3 }}
+                activeDot={{ r: 5, strokeWidth: 0 }}
               />
             ))}
           </LineChart>
@@ -756,7 +844,7 @@ function CostTrendChart({ dailyCosts }: { dailyCosts: DailyCost[] }) {
 }
 
 function CostsTab({ costs, loading }: { costs: CostAnalytics | null; loading: boolean }) {
-  if (loading || !costs) return <Skeleton className="h-64 w-full" />;
+  if (loading || !costs) return <TabSkeleton label="Loading cost analytics..." cards={2} charts={2} />;
 
   return (
     <div className="space-y-6">
@@ -775,12 +863,12 @@ function CostsTab({ costs, loading }: { costs: CostAnalytics | null; loading: bo
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={250}>
-              <BarChart data={costs.models.filter(m => m.estimated_cost > 0)} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis type="number" tickFormatter={(v: number) => formatCost(v)} fontSize={11} />
-                <YAxis type="category" dataKey="model" width={150} fontSize={11} />
-                <Tooltip formatter={(v: number) => formatCost(v)} />
-                <Bar dataKey="estimated_cost" name="Cost">
+              <BarChart data={costs.models.filter(m => m.estimated_cost > 0)} layout="vertical" margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" horizontal={false} />
+                <XAxis type="number" {...AXIS_PROPS} tickFormatter={(v: number) => formatCost(v)} />
+                <YAxis type="category" dataKey="model" width={150} {...AXIS_PROPS} />
+                <Tooltip {...TOOLTIP_STYLE} formatter={(v: number) => [formatCost(v), 'Cost']} />
+                <Bar dataKey="estimated_cost" name="Cost" radius={[0, 4, 4, 0]}>
                   {costs.models.filter(m => m.estimated_cost > 0).map((m, i) => (
                     <Cell key={i} fill={AGENT_COLORS[m.agent] ?? '#6b7280'} />
                   ))}
@@ -796,12 +884,12 @@ function CostsTab({ costs, loading }: { costs: CostAnalytics | null; loading: bo
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={250}>
-              <BarChart data={costs.by_project.slice(0, 10)} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis type="number" tickFormatter={(v: number) => formatCost(v)} fontSize={11} />
-                <YAxis type="category" dataKey="display_name" width={120} fontSize={11} />
-                <Tooltip formatter={(v: number) => formatCost(v)} />
-                <Bar dataKey="estimated_cost" name="Cost">
+              <BarChart data={costs.by_project.slice(0, 10)} layout="vertical" margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" horizontal={false} />
+                <XAxis type="number" {...AXIS_PROPS} tickFormatter={(v: number) => formatCost(v)} />
+                <YAxis type="category" dataKey="display_name" width={120} {...AXIS_PROPS} />
+                <Tooltip {...TOOLTIP_STYLE} formatter={(v: number) => [formatCost(v), 'Cost']} />
+                <Bar dataKey="estimated_cost" name="Cost" radius={[0, 4, 4, 0]}>
                   {costs.by_project.slice(0, 10).map((p, i) => (
                     <Cell key={i} fill={AGENT_COLORS[p.agent] ?? '#6b7280'} />
                   ))}
@@ -818,7 +906,7 @@ function CostsTab({ costs, loading }: { costs: CostAnalytics | null; loading: bo
 // ─── Activity Tab ─────────────────────────────────────────────────────────────
 
 function ActivityTab({ activity, loading }: { activity: ActivityData | null; loading: boolean }) {
-  if (loading || !activity) return <Skeleton className="h-64 w-full" />;
+  if (loading || !activity) return <TabSkeleton label="Loading activity data..." cards={3} charts={2} />;
 
   return (
     <div className="space-y-6">
@@ -835,12 +923,12 @@ function ActivityTab({ activity, loading }: { activity: ActivityData | null; loa
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={activity.hour_counts}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="hour" fontSize={11} />
-                <YAxis fontSize={11} />
-                <Tooltip />
-                <Bar dataKey="count" fill="#8b5cf6" name="Sessions" />
+              <BarChart data={activity.hour_counts} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />
+                <XAxis dataKey="hour" {...AXIS_PROPS} />
+                <YAxis {...AXIS_PROPS} />
+                <Tooltip {...TOOLTIP_STYLE} />
+                <Bar dataKey="count" fill="#8b5cf6" name="Sessions" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
@@ -852,12 +940,12 @@ function ActivityTab({ activity, loading }: { activity: ActivityData | null; loa
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={activity.dow_counts}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="day" fontSize={11} />
-                <YAxis fontSize={11} />
-                <Tooltip />
-                <Bar dataKey="count" fill="#f97316" name="Sessions" />
+              <BarChart data={activity.dow_counts} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />
+                <XAxis dataKey="day" {...AXIS_PROPS} />
+                <YAxis {...AXIS_PROPS} />
+                <Tooltip {...TOOLTIP_STYLE} />
+                <Bar dataKey="count" fill="#f97316" name="Sessions" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
@@ -906,7 +994,7 @@ function ActivityHeatmap({ data }: { data: Array<{ date: string; sessionCount: n
 // ─── Efficiency Tab ──────────────────────────────────────────────────────────
 
 function EfficiencyTab({ efficiency, loading }: { efficiency: EfficiencyData | null; loading: boolean }) {
-  if (loading || !efficiency) return <Skeleton className="h-64 w-full" />;
+  if (loading || !efficiency) return <TabSkeleton label="Loading efficiency metrics..." cards={3} charts={1} />;
 
   const chartData = efficiency.agents.map(a => ({
     agent: AGENT_LABELS[a.agent] ?? a.agent,
@@ -963,13 +1051,14 @@ function EfficiencyTab({ efficiency, loading }: { efficiency: EfficiencyData | n
         </CardHeader>
         <CardContent>
           <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="agent" fontSize={11} />
-              <YAxis domain={[0, 100]} fontSize={11} />
-              <Tooltip formatter={(v: number) => `${v}%`} />
-              <Bar dataKey="Tool Success" fill="#60a5fa" />
-              <Bar dataKey="Completion" fill="#a78bfa" />
+            <BarChart data={chartData} margin={{ top: 5, right: 10, left: 10, bottom: 5 }} barGap={4} barCategoryGap="20%">
+              <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />
+              <XAxis dataKey="agent" {...AXIS_PROPS} />
+              <YAxis domain={[0, 100]} {...AXIS_PROPS} tickFormatter={(v: number) => `${v}%`} />
+              <Tooltip {...TOOLTIP_STYLE} formatter={(v: number) => [`${v}%`]} />
+              <Legend wrapperStyle={{ paddingTop: '10px' }} formatter={(value) => <span className="text-sm text-muted-foreground">{value}</span>} />
+              <Bar dataKey="Tool Success" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="Completion" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </CardContent>
@@ -1012,7 +1101,7 @@ function successRateColor(rate: number): string {
 }
 
 function ToolsTab({ tools, loading }: { tools: ToolsData | null; loading: boolean }) {
-  if (loading || !tools) return <Skeleton className="h-64 w-full" />;
+  if (loading || !tools) return <TabSkeleton label="Loading tool analytics..." cards={3} charts={1} table />;
 
   const byCategory = new Map<string, number>();
   for (const t of tools.tools) {
@@ -1037,12 +1126,12 @@ function ToolsTab({ tools, loading }: { tools: ToolsData | null; loading: boolea
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={250}>
-              <BarChart data={categoryData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="category" fontSize={11} />
-                <YAxis fontSize={11} />
-                <Tooltip />
-                <Bar dataKey="count" name="Calls">
+              <BarChart data={categoryData} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />
+                <XAxis dataKey="category" {...AXIS_PROPS} />
+                <YAxis {...AXIS_PROPS} />
+                <Tooltip {...TOOLTIP_STYLE} />
+                <Bar dataKey="count" name="Calls" radius={[4, 4, 0, 0]}>
                   {categoryData.map((entry, i) => (
                     <Cell key={i} fill={entry.fill} />
                   ))}
@@ -1098,15 +1187,15 @@ function ToolsTab({ tools, loading }: { tools: ToolsData | null; loading: boolea
 
 // ─── Projects Tab ───────────────────────────────────────────────────────────
 
-function ProjectsTab({ projects, loading }: { projects: ProjectAnalytics[] | null; loading: boolean }) {
-  if (loading || !projects) return <Skeleton className="h-64 w-full" />;
+function ProjectsTab({ projects, loading, onSelectProject }: { projects: ProjectAnalytics[] | null; loading: boolean; onSelectProject: (projectPath: string) => void }) {
+  if (loading || !projects) return <TabSkeleton label="Loading project analytics..." cards={6} />;
 
   return (
     <div className="space-y-4">
       <span className="text-sm text-muted-foreground">{projects.length} projects</span>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {projects.slice(0, 15).map(p => (
-          <Card key={p.project_path}>
+          <Card key={p.project_path} className="cursor-pointer hover:border-primary/50 transition-colors" onClick={() => onSelectProject(p.project_path)}>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium truncate" title={p.project_path}>{p.display_name}</CardTitle>
               <div className="flex gap-1">
@@ -1137,7 +1226,7 @@ function AdvancedTab({ advanced, failurePatterns, loading }: {
   failurePatterns: FailurePattern[] | null;
   loading: boolean;
 }) {
-  if (loading || !advanced) return <Skeleton className="h-64 w-full" />;
+  if (loading || !advanced) return <TabSkeleton label="Loading advanced analytics..." cards={3} charts={2} table />;
 
   const { mcp, hourly_effectiveness, duration_distribution, conversation_depth } = advanced;
 
@@ -1190,12 +1279,12 @@ function AdvancedTab({ advanced, failurePatterns, loading }: {
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={hourly_effectiveness.filter(h => h.total_sessions > 0)}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="hour" fontSize={11} />
-                <YAxis domain={[0, 1]} tickFormatter={(v: number) => formatPct(v)} fontSize={11} />
-                <Tooltip formatter={(v: number) => formatPct(v)} />
-                <Bar dataKey="completion_rate" name="Completion Rate">
+              <BarChart data={hourly_effectiveness.filter(h => h.total_sessions > 0)} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />
+                <XAxis dataKey="hour" {...AXIS_PROPS} />
+                <YAxis domain={[0, 1]} {...AXIS_PROPS} tickFormatter={(v: number) => formatPct(v)} />
+                <Tooltip {...TOOLTIP_STYLE} formatter={(v: number) => formatPct(v)} />
+                <Bar dataKey="completion_rate" name="Completion Rate" radius={[4, 4, 0, 0]}>
                   {hourly_effectiveness.filter(h => h.total_sessions > 0).map((h, i) => (
                     <Cell key={i} fill={h.completion_rate >= 0.8 ? '#22c55e' : h.completion_rate >= 0.5 ? '#f59e0b' : '#ef4444'} />
                   ))}
@@ -1212,13 +1301,14 @@ function AdvancedTab({ advanced, failurePatterns, loading }: {
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={duration_distribution}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="label" fontSize={11} />
-                <YAxis fontSize={11} />
-                <Tooltip />
-                <Bar dataKey="session_count" fill="#60a5fa" name="Sessions" />
-                <Bar dataKey="completed_count" fill="#22c55e" name="Completed" />
+              <BarChart data={duration_distribution} margin={{ top: 5, right: 10, left: 10, bottom: 5 }} barGap={4} barCategoryGap="20%">
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />
+                <XAxis dataKey="label" {...AXIS_PROPS} />
+                <YAxis {...AXIS_PROPS} />
+                <Tooltip {...TOOLTIP_STYLE} />
+                <Legend wrapperStyle={{ paddingTop: '10px' }} formatter={(value) => <span className="text-sm text-muted-foreground">{value}</span>} />
+                <Bar dataKey="session_count" fill="#3b82f6" name="Sessions" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="completed_count" fill="#22c55e" name="Completed" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
@@ -1248,12 +1338,12 @@ function AdvancedTab({ advanced, failurePatterns, loading }: {
             </div>
           </div>
           <ResponsiveContainer width="100%" height={150}>
-            <BarChart data={conversation_depth.depth_buckets}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="label" fontSize={11} />
-              <YAxis fontSize={11} />
-              <Tooltip />
-              <Bar dataKey="session_count" fill="#8b5cf6" name="Sessions" />
+            <BarChart data={conversation_depth.depth_buckets} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />
+              <XAxis dataKey="label" {...AXIS_PROPS} />
+              <YAxis {...AXIS_PROPS} />
+              <Tooltip {...TOOLTIP_STYLE} />
+              <Bar dataKey="session_count" fill="#8b5cf6" name="Sessions" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </CardContent>
@@ -1297,9 +1387,11 @@ function AdvancedTab({ advanced, failurePatterns, loading }: {
   );
 }
 
-// ─── Workspace Tab (Claude Code specific) ───────────────────────────────────
+// ─── Workspace Tab (Multi-agent) ─────────────────────────────────────────────
 
 function WorkspaceTab() {
+  const [agentTab, setAgentTab] = useState<'claude-code' | 'kiro'>('claude-code');
+  // Claude Code state
   const [section, setSection] = useState<'active' | 'memory' | 'plans' | 'tasks' | 'settings'>('active');
   const [activeSessions, setActiveSessions] = useState<ActiveSessionInfo[] | null>(null);
   const [memoryProjects, setMemoryProjects] = useState<MemoryProject[] | null>(null);
@@ -1309,8 +1401,14 @@ function WorkspaceTab() {
   const [editingMemory, setEditingMemory] = useState<MemoryFile | null>(null);
   const [editContent, setEditContent] = useState('');
   const [expandedPlan, setExpandedPlan] = useState<string | null>(null);
+  // Kiro state
+  const [kiroSection, setKiroSection] = useState<'mcp' | 'agents' | 'powers' | 'extensions' | 'settings'>('mcp');
+  const [kiroWorkspace, setKiroWorkspace] = useState<KiroWorkspace | null>(null);
+  const [kiroLoaded, setKiroLoaded] = useState(false);
 
+  // Claude Code data loading
   useEffect(() => {
+    if (agentTab !== 'claude-code') return;
     if (section === 'active' && !activeSessions) {
       fetchJson<{ sessions: ActiveSessionInfo[] }>('/api/coding-agents/claude-code/active-sessions')
         .then(d => setActiveSessions(d.sessions)).catch(() => setActiveSessions([]));
@@ -1331,7 +1429,17 @@ function WorkspaceTab() {
       fetchJson<ClaudeSettings>('/api/coding-agents/claude-code/settings')
         .then(d => setSettings(d)).catch(() => {});
     }
-  }, [section]);
+  }, [agentTab, section]);
+
+  // Kiro data loading
+  useEffect(() => {
+    if (agentTab === 'kiro' && !kiroLoaded) {
+      setKiroLoaded(true);
+      fetchJson<KiroWorkspace>('/api/coding-agents/kiro/workspace')
+        .then(d => setKiroWorkspace(d))
+        .catch(() => setKiroWorkspace({ settings: {}, mcpServers: [], agents: [], powers: [], extensions: [], recentCommands: [] }));
+    }
+  }, [agentTab, kiroLoaded]);
 
   const saveMemory = async () => {
     if (!editingMemory) return;
@@ -1355,6 +1463,22 @@ function WorkspaceTab() {
 
   return (
     <div className="space-y-4">
+      {/* Agent selector */}
+      <div className="flex items-center gap-4 border-b pb-3">
+        {(['claude-code', 'kiro'] as const).map(agent => (
+          <button
+            key={agent}
+            onClick={() => setAgentTab(agent)}
+            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md transition-colors ${agentTab === agent ? 'bg-primary/10 border border-primary/30 text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`}
+          >
+            <div className="w-3 h-3 rounded-full" style={{ backgroundColor: AGENT_COLORS[agent] }} />
+            {AGENT_LABELS[agent] ?? agent}
+          </button>
+        ))}
+      </div>
+
+      {/* Claude Code workspace */}
+      {agentTab === 'claude-code' && <>
       <div className="flex gap-2 flex-wrap">
         {(['active', 'memory', 'plans', 'tasks', 'settings'] as const).map(s => (
           <button
@@ -1369,7 +1493,7 @@ function WorkspaceTab() {
 
       {/* Active Sessions */}
       {section === 'active' && (
-        !activeSessions ? <Skeleton className="h-32 w-full" /> :
+        !activeSessions ? <TabSkeleton label="Checking active sessions..." cards={2} /> :
         activeSessions.length === 0 ? (
           <Card><CardContent className="pt-6 text-center text-muted-foreground text-sm">No active sessions (last 30 minutes)</CardContent></Card>
         ) : (
@@ -1396,7 +1520,7 @@ function WorkspaceTab() {
 
       {/* Memory */}
       {section === 'memory' && (
-        !memoryProjects ? <Skeleton className="h-32 w-full" /> :
+        !memoryProjects ? <TabSkeleton label="Loading memory files..." cards={3} /> :
         memoryProjects.length === 0 ? (
           <Card><CardContent className="pt-6 text-center text-muted-foreground text-sm">No memory files found</CardContent></Card>
         ) : (
@@ -1456,40 +1580,54 @@ function WorkspaceTab() {
         )
       )}
 
-      {/* Plans */}
+      {/* Plans — left list + right markdown viewer */}
       {section === 'plans' && (
-        !plans ? <Skeleton className="h-32 w-full" /> :
+        !plans ? <TabSkeleton label="Loading plans..." cards={2} /> :
         plans.length === 0 ? (
           <Card><CardContent className="pt-6 text-center text-muted-foreground text-sm">No plans found</CardContent></Card>
         ) : (
-          <div className="space-y-2">
-            <span className="text-sm text-muted-foreground">{plans.length} plan{plans.length > 1 ? 's' : ''}</span>
-            {plans.map(plan => (
-              <Card key={plan.name}>
-                <CardContent className="pt-3 pb-3">
+          <div className="flex gap-4 min-h-[500px]">
+            {/* Left pane — plan list */}
+            <div className="w-72 flex-shrink-0 space-y-1 overflow-y-auto max-h-[calc(100vh-250px)]">
+              <p className="text-xs text-muted-foreground mb-2">{plans.length} plan{plans.length > 1 ? 's' : ''}</p>
+              {plans.map(plan => {
+                const titleMatch = plan.content.match(/^#\s+(.+?)$/m);
+                const planTitle = titleMatch ? titleMatch[1].replace(/^Plan:\s*/i, '') : plan.name;
+                return (
                   <div
-                    className="flex items-center justify-between cursor-pointer"
+                    key={plan.name}
+                    className={`p-3 rounded-md border cursor-pointer transition-colors ${expandedPlan === plan.name ? 'bg-primary/10 border-primary/30' : 'hover:bg-muted'}`}
                     onClick={() => setExpandedPlan(expandedPlan === plan.name ? null : plan.name)}
                   >
-                    <div>
-                      <p className="text-sm font-medium">{plan.name}</p>
-                      <p className="text-xs text-muted-foreground">{new Date(plan.modifiedAt).toLocaleString()}</p>
-                    </div>
-                    <span className="text-muted-foreground">{expandedPlan === plan.name ? '\u25B2' : '\u25BC'}</span>
+                    <p className="text-sm font-medium line-clamp-2" title={planTitle}>{planTitle}</p>
+                    <p className="text-xs text-muted-foreground mt-1">{new Date(plan.modifiedAt).toLocaleString()}</p>
                   </div>
-                  {expandedPlan === plan.name && (
-                    <pre className="mt-3 text-xs font-mono bg-muted/50 p-3 rounded max-h-96 overflow-y-auto whitespace-pre-wrap">{plan.content}</pre>
-                  )}
+                );
+              })}
+            </div>
+            {/* Right pane — rendered markdown */}
+            <Card className="flex-1 overflow-hidden">
+              {expandedPlan ? (
+                <CardContent className="overflow-y-auto max-h-[calc(100vh-250px)] pt-6">
+                  <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:text-sm prose-p:text-sm prose-p:leading-relaxed prose-code:text-opensearch-blue prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-ul:text-sm prose-ol:text-sm prose-table:text-sm">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {plans.find(p => p.name === expandedPlan)?.content ?? ''}
+                    </ReactMarkdown>
+                  </div>
                 </CardContent>
-              </Card>
-            ))}
+              ) : (
+                <CardContent className="flex items-center justify-center h-full">
+                  <p className="text-sm text-muted-foreground">Select a plan to view</p>
+                </CardContent>
+              )}
+            </Card>
           </div>
         )
       )}
 
       {/* Tasks */}
       {section === 'tasks' && (
-        !tasks ? <Skeleton className="h-32 w-full" /> :
+        !tasks ? <TabSkeleton label="Loading tasks..." table /> :
         tasks.length === 0 ? (
           <Card><CardContent className="pt-6 text-center text-muted-foreground text-sm">No tasks found</CardContent></Card>
         ) : (
@@ -1530,7 +1668,7 @@ function WorkspaceTab() {
 
       {/* Settings */}
       {section === 'settings' && (
-        !settings ? <Skeleton className="h-32 w-full" /> : (
+        !settings ? <TabSkeleton label="Loading settings..." cards={3} /> : (
           <div className="space-y-4">
             <div className="grid grid-cols-3 gap-4">
               <StatCard title="Storage" value={`${(settings.storage_bytes / 1024).toFixed(0)} KB`} />
@@ -1600,6 +1738,185 @@ function WorkspaceTab() {
           </div>
         )
       )}
+      </>}
+
+      {/* Kiro workspace */}
+      {agentTab === 'kiro' && <>
+        <div className="flex gap-2 flex-wrap">
+          {(['mcp', 'agents', 'powers', 'extensions', 'settings'] as const).map(s => (
+            <button
+              key={s}
+              onClick={() => setKiroSection(s)}
+              className={`px-3 py-1.5 text-sm border rounded capitalize ${kiroSection === s ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
+            >
+              {s === 'mcp' ? 'MCP Servers' : s}
+            </button>
+          ))}
+        </div>
+
+        {!kiroWorkspace ? <TabSkeleton label="Loading Kiro workspace..." cards={3} table /> : <>
+          {/* MCP Servers */}
+          {kiroSection === 'mcp' && (
+            kiroWorkspace.mcpServers.length === 0 ? (
+              <Card><CardContent className="pt-6 text-center text-muted-foreground text-sm">No MCP servers configured</CardContent></Card>
+            ) : (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium">MCP Servers ({kiroWorkspace.mcpServers.length})</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Server</TableHead>
+                        <TableHead>Command</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead className="text-right">Disabled Tools</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {kiroWorkspace.mcpServers.map(s => (
+                        <TableRow key={s.name}>
+                          <TableCell className="text-sm font-mono font-medium">{s.name}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground font-mono">{s.command}</TableCell>
+                          <TableCell>
+                            {s.disabled
+                              ? <Badge variant="secondary" className="text-xs">Disabled</Badge>
+                              : <Badge variant="outline" className="text-xs text-green-600 border-green-600">Active</Badge>}
+                          </TableCell>
+                          <TableCell className="text-right text-sm">{s.disabledToolCount > 0 ? s.disabledToolCount : '-'}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+            )
+          )}
+
+          {/* Agents */}
+          {kiroSection === 'agents' && (
+            kiroWorkspace.agents.length === 0 ? (
+              <Card><CardContent className="pt-6 text-center text-muted-foreground text-sm">No agents configured</CardContent></Card>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {kiroWorkspace.agents.map(a => (
+                  <Card key={a.name}>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm font-medium font-mono">{a.name}</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-1 text-sm">
+                      {a.description && <p className="text-xs text-muted-foreground mb-2 line-clamp-2">{a.description}</p>}
+                      <MetricRow label="MCP Servers" value={a.hasMcpServers ? 'Yes' : 'No'} />
+                      <MetricRow label="Hooks" value={a.hasHooks ? 'Yes' : 'No'} />
+                      <MetricRow label="Resources" value={String(a.resourceCount)} />
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )
+          )}
+
+          {/* Powers */}
+          {kiroSection === 'powers' && (
+            kiroWorkspace.powers.length === 0 ? (
+              <Card><CardContent className="pt-6 text-center text-muted-foreground text-sm">No powers installed</CardContent></Card>
+            ) : (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium">Installed Powers ({kiroWorkspace.powers.length})</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Power</TableHead>
+                        <TableHead>Registry</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {kiroWorkspace.powers.map(p => (
+                        <TableRow key={p.name}>
+                          <TableCell className="text-sm font-mono font-medium">{p.name}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground">{p.registryId}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+            )
+          )}
+
+          {/* Extensions */}
+          {kiroSection === 'extensions' && (
+            kiroWorkspace.extensions.length === 0 ? (
+              <Card><CardContent className="pt-6 text-center text-muted-foreground text-sm">No extensions found</CardContent></Card>
+            ) : (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium">Extensions ({kiroWorkspace.extensions.length})</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Extension</TableHead>
+                        <TableHead>ID</TableHead>
+                        <TableHead>Version</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {kiroWorkspace.extensions.map(e => (
+                        <TableRow key={`${e.id}-${e.version}`}>
+                          <TableCell className="text-sm font-medium">{e.name}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground font-mono">{e.id}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground">{e.version}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+            )
+          )}
+
+          {/* Settings */}
+          {kiroSection === 'settings' && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-3 gap-4">
+                <StatCard title="MCP Servers" value={String(kiroWorkspace.mcpServers.length)} />
+                <StatCard title="Agents" value={String(kiroWorkspace.agents.length)} />
+                <StatCard title="Powers" value={String(kiroWorkspace.powers.length)} />
+              </div>
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium">CLI Settings</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <pre className="text-xs font-mono bg-muted/50 p-3 rounded max-h-60 overflow-y-auto whitespace-pre-wrap">
+                    {JSON.stringify(kiroWorkspace.settings, null, 2)}
+                  </pre>
+                </CardContent>
+              </Card>
+              {kiroWorkspace.recentCommands.length > 0 && (
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium">Recent CLI Commands ({kiroWorkspace.recentCommands.length})</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-1">
+                      {kiroWorkspace.recentCommands.map((cmd, i) => (
+                        <div key={i} className="text-xs font-mono bg-muted/50 px-3 py-1.5 rounded truncate" title={cmd}>{cmd}</div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+          )}
+        </>}
+      </>}
     </div>
   );
 }
@@ -1646,17 +1963,30 @@ function StatCard({ title, value, accent }: { title: string; value: string; acce
   );
 }
 
-function OverviewSkeleton() {
+function TabSkeleton({ label, cards = 0, charts = 0, table = false }: { label: string; cards?: number; charts?: number; table?: boolean }) {
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {[1, 2, 3, 4].map(i => <Skeleton key={i} className="h-20" />)}
+      <div className="flex items-center gap-3">
+        <div className="h-4 w-4 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+        <span className="text-sm text-muted-foreground animate-pulse">{label}</span>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {[1, 2, 3].map(i => <Skeleton key={i} className="h-40" />)}
-      </div>
+      {cards > 0 && (
+        <div className={`grid grid-cols-2 md:grid-cols-${Math.min(cards, 6)} gap-4`}>
+          {Array.from({ length: cards }, (_, i) => <Skeleton key={i} className="h-20 rounded-lg" />)}
+        </div>
+      )}
+      {charts > 0 && (
+        <div className={`grid grid-cols-1 ${charts > 1 ? 'lg:grid-cols-2' : ''} gap-4`}>
+          {Array.from({ length: charts }, (_, i) => <Skeleton key={i} className="h-52 rounded-lg" />)}
+        </div>
+      )}
+      {table && <Skeleton className="h-64 rounded-lg" />}
     </div>
   );
+}
+
+function OverviewSkeleton() {
+  return <TabSkeleton label="Loading overview..." cards={6} charts={2} />;
 }
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
@@ -1682,6 +2012,12 @@ export const CodingAgentsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState('overview');
   const [error, setError] = useState<string | null>(null);
   const [rangePreset, setRangePreset] = useState<DateRangePreset>('today');
+  const [sessionProjectFilter, setSessionProjectFilter] = useState<string | undefined>();
+
+  const handleSelectProject = (projectPath: string) => {
+    setSessionProjectFilter(projectPath);
+    setActiveTab('sessions');
+  };
 
   const range = getDateRange(rangePreset);
 
@@ -1834,10 +2170,10 @@ export const CodingAgentsPage: React.FC = () => {
             <OverviewTab stats={stats} agents={agents} onTabChange={setActiveTab} rangePreset={rangePreset} />
           </TabsContent>
           <TabsContent value="sessions" className="mt-4">
-            <SessionsTab range={range} loading={loading} />
+            <SessionsTab range={range} loading={loading} initialProject={sessionProjectFilter} />
           </TabsContent>
           <TabsContent value="projects" className="mt-4">
-            <ProjectsTab projects={projects} loading={activeTab === 'projects' && !projects} />
+            <ProjectsTab projects={projects} loading={activeTab === 'projects' && !projects} onSelectProject={handleSelectProject} />
           </TabsContent>
           <TabsContent value="costs" className="mt-4">
             <CostsTab costs={costs} loading={activeTab === 'costs' && !costs} />
