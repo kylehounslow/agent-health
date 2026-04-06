@@ -32,10 +32,24 @@ function cost(n: number): string {
 export function generateInsights(
   agentStats: AgentStats[],
   efficiency: EfficiencyAnalytics,
+  wastedCost?: number,
+  abandonedSessions?: number,
 ): Insight[] {
   const insights: Insight[] = [];
 
   // ── Warnings ──────────────────────────────────────────────────────────────
+
+  // Wasted cost on abandoned sessions
+  if (wastedCost && wastedCost > 0.50 && abandonedSessions && abandonedSessions >= 2) {
+    const totalSessions = agentStats.reduce((s, a) => s + a.totalSessions, 0);
+    const abandonRate = totalSessions > 0 ? abandonedSessions / totalSessions : 0;
+    insights.push({
+      type: 'warning',
+      title: `${cost(wastedCost)} spent on ${abandonedSessions} abandoned sessions`,
+      description: `${pct(abandonRate)} of sessions don't complete. Try smaller, focused prompts to reduce wasted spend.`,
+      linkTab: 'sessions',
+    });
+  }
 
   // Low tool success rate per agent
   for (const a of efficiency.agents) {

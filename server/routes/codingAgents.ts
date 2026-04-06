@@ -6,12 +6,24 @@
 /**
  * API routes for coding agent analytics.
  * Provides unified access to Claude Code, Kiro, and Codex session data.
+ *
+ * All data endpoints accept optional `from` and `to` query params (YYYY-MM-DD)
+ * for date range filtering.
  */
 
 import { Router, Request, Response } from 'express';
 import { codingAgentRegistry } from '../services/codingAgents';
+import type { DateRange } from '../services/codingAgents/types';
 
 const router = Router();
+
+/** Extract date range from query params */
+function parseDateRange(req: Request): DateRange | undefined {
+  const from = req.query.from as string | undefined;
+  const to = req.query.to as string | undefined;
+  if (!from && !to) return undefined;
+  return { from, to };
+}
 
 /**
  * GET /api/coding-agents/available
@@ -34,10 +46,12 @@ router.get('/api/coding-agents/available', async (_req: Request, res: Response) 
 /**
  * GET /api/coding-agents/stats
  * Returns combined stats from all available coding agents.
+ * Query params: from, to (YYYY-MM-DD)
  */
-router.get('/api/coding-agents/stats', async (_req: Request, res: Response) => {
+router.get('/api/coding-agents/stats', async (req: Request, res: Response) => {
   try {
-    const stats = await codingAgentRegistry.getCombinedStats();
+    const range = parseDateRange(req);
+    const stats = await codingAgentRegistry.getCombinedStats(range);
     res.json(stats);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -50,10 +64,12 @@ router.get('/api/coding-agents/stats', async (_req: Request, res: Response) => {
  * Query params:
  *   - agent: filter by agent name (claude-code, kiro, codex)
  *   - limit: max number of sessions to return (default 100)
+ *   - from, to: date range (YYYY-MM-DD)
  */
 router.get('/api/coding-agents/sessions', async (req: Request, res: Response) => {
   try {
-    let sessions = await codingAgentRegistry.getAllSessions();
+    const range = parseDateRange(req);
+    let sessions = await codingAgentRegistry.getAllSessions(range);
 
     const agentFilter = req.query.agent as string | undefined;
     if (agentFilter) {
@@ -72,10 +88,12 @@ router.get('/api/coding-agents/sessions', async (req: Request, res: Response) =>
 /**
  * GET /api/coding-agents/costs
  * Returns cost analytics across all agents.
+ * Query params: from, to (YYYY-MM-DD)
  */
-router.get('/api/coding-agents/costs', async (_req: Request, res: Response) => {
+router.get('/api/coding-agents/costs', async (req: Request, res: Response) => {
   try {
-    const costs = await codingAgentRegistry.getCostAnalytics();
+    const range = parseDateRange(req);
+    const costs = await codingAgentRegistry.getCostAnalytics(range);
     res.json(costs);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -85,10 +103,12 @@ router.get('/api/coding-agents/costs', async (_req: Request, res: Response) => {
 /**
  * GET /api/coding-agents/activity
  * Returns activity data (streaks, heatmap, hourly/dow patterns).
+ * Query params: from, to (YYYY-MM-DD)
  */
-router.get('/api/coding-agents/activity', async (_req: Request, res: Response) => {
+router.get('/api/coding-agents/activity', async (req: Request, res: Response) => {
   try {
-    const activity = await codingAgentRegistry.getActivityData();
+    const range = parseDateRange(req);
+    const activity = await codingAgentRegistry.getActivityData(range);
     res.json(activity);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -98,10 +118,12 @@ router.get('/api/coding-agents/activity', async (_req: Request, res: Response) =
 /**
  * GET /api/coding-agents/tools
  * Returns tool usage analytics across all agents.
+ * Query params: from, to (YYYY-MM-DD)
  */
-router.get('/api/coding-agents/tools', async (_req: Request, res: Response) => {
+router.get('/api/coding-agents/tools', async (req: Request, res: Response) => {
   try {
-    const tools = await codingAgentRegistry.getToolsAnalytics();
+    const range = parseDateRange(req);
+    const tools = await codingAgentRegistry.getToolsAnalytics(range);
     res.json(tools);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -111,10 +133,12 @@ router.get('/api/coding-agents/tools', async (_req: Request, res: Response) => {
 /**
  * GET /api/coding-agents/efficiency
  * Returns per-agent efficiency comparison (tool success, completion, cost/completion).
+ * Query params: from, to (YYYY-MM-DD)
  */
-router.get('/api/coding-agents/efficiency', async (_req: Request, res: Response) => {
+router.get('/api/coding-agents/efficiency', async (req: Request, res: Response) => {
   try {
-    const efficiency = await codingAgentRegistry.getEfficiencyAnalytics();
+    const range = parseDateRange(req);
+    const efficiency = await codingAgentRegistry.getEfficiencyAnalytics(range);
     res.json(efficiency);
   } catch (error: any) {
     res.status(500).json({ error: error.message });

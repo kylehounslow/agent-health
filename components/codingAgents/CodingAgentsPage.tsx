@@ -8,6 +8,7 @@ import { ENV_CONFIG } from '@/lib/config';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, Cell, PieChart, Pie,
+  LineChart, Line, Legend,
 } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -60,6 +61,8 @@ interface CombinedStats {
   totalCost: number;
   totalSessions: number;
   totalTokens: number;
+  wastedCost: number;
+  abandonedSessions: number;
   insights: Insight[];
 }
 interface Session {
@@ -74,13 +77,20 @@ interface Session {
   output_tokens: number;
   first_prompt: string;
   estimated_cost: number;
+  session_completed: boolean;
   tool_counts: Record<string, number>;
+}
+interface DailyCost {
+  date: string;
+  cost: number;
+  agent: string;
 }
 interface CostAnalytics {
   total_cost: number;
   total_savings: number;
   models: Array<{ agent: string; model: string; estimated_cost: number; input_tokens: number; output_tokens: number }>;
   by_project: Array<{ agent: string; display_name: string; estimated_cost: number }>;
+  daily_costs: DailyCost[];
 }
 interface ActivityData {
   daily_activity: Array<{ date: string; sessionCount: number; messageCount: number }>;
@@ -148,6 +158,27 @@ function formatPct(n: number): string {
   return `${(n * 100).toFixed(0)}%`;
 }
 
+type DateRangePreset = 'today' | '7d' | '30d' | 'all';
+
+function getDateRange(preset: DateRangePreset): { from?: string; to?: string } {
+  if (preset === 'all') return {};
+  const today = new Date();
+  const to = today.toISOString().slice(0, 10);
+  if (preset === 'today') return { from: to, to };
+  const d = new Date(today);
+  d.setDate(d.getDate() - (preset === '7d' ? 6 : 29));
+  return { from: d.toISOString().slice(0, 10), to };
+}
+
+function buildQuery(basePath: string, range: { from?: string; to?: string }, extra?: Record<string, string>): string {
+  const params = new URLSearchParams();
+  if (range.from) params.set('from', range.from);
+  if (range.to) params.set('to', range.to);
+  if (extra) for (const [k, v] of Object.entries(extra)) params.set(k, v);
+  const qs = params.toString();
+  return qs ? `${basePath}?${qs}` : basePath;
+}
+
 async function fetchJson<T>(path: string): Promise<T> {
   const res = await fetch(`${ENV_CONFIG.backendUrl}${path}`);
   if (!res.ok) throw new Error(`Failed to fetch ${path}`);
@@ -207,9 +238,51 @@ function InsightsBanner({ insights, onTabChange }: { insights: Insight[]; onTabC
   );
 }
 
+// ─── Today Summary ───────────────────────────────────────────────────────────
+
+function TodaySummary({ stats }: { stats: CombinedStats }) {
+  const totalCompleted = stats.agents.reduce((s, a) => s + a.completedSessions, 0);
+
+  return (
+    <Card className="border-l-4 border-l-blue-500">
+      <CardContent className="pt-4 pb-3">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-sm font-medium text-muted-foreground">Today&apos;s Summary</p>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          <div>
+            <p className="text-2xl font-bold">{stats.totalSessions}</p>
+            <p className="text-xs text-muted-foreground">sessions</p>
+          </div>
+          <div>
+            <p className="text-2xl font-bold">{formatCost(stats.totalCost)}</p>
+            <p className="text-xs text-muted-foreground">spent</p>
+          </div>
+          <div>
+            <p className="text-2xl font-bold text-green-600">{totalCompleted}</p>
+            <p className="text-xs text-muted-foreground">completed</p>
+          </div>
+          <div>
+            <p className={`text-2xl font-bold ${stats.abandonedSessions > 0 ? 'text-amber-600' : ''}`}>
+              {stats.abandonedSessions}
+            </p>
+            <p className="text-xs text-muted-foreground">abandoned</p>
+          </div>
+          <div>
+            <p className={`text-2xl font-bold ${stats.wastedCost > 0 ? 'text-red-600' : ''}`}>
+              {formatCost(stats.wastedCost)}
+            </p>
+            <p className="text-xs text-muted-foreground">wasted cost</p>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 // ─── Overview Tab ─────────────────────────────────────────────────────────────
 
-function OverviewTab({ stats, agents, onTabChange }: { stats: CombinedStats | null; agents: AgentInfo[]; onTabChange: (tab: string) => void }) {
+function OverviewTab({ stats, agents, onTabChange, rangePreset }: { stats: CombinedStats | null; agents: AgentInfo[]; onTabChange: (tab: string) => void; rangePreset: DateRangePreset }) {
   if (!stats) return <OverviewSkeleton />;
 
   const agentPieData = stats.agents.map(a => ({
@@ -229,6 +302,9 @@ function OverviewTab({ stats, agents, onTabChange }: { stats: CombinedStats | nu
 
   return (
     <div className="space-y-6">
+      {/* Today summary card — shown when "Today" range is selected */}
+      {rangePreset === 'today' && <TodaySummary stats={stats} />}
+
       {/* Insights banner */}
       <InsightsBanner insights={stats.insights} onTabChange={onTabChange} />
 
@@ -238,7 +314,7 @@ function OverviewTab({ stats, agents, onTabChange }: { stats: CombinedStats | nu
         <StatCard title="Estimated Cost" value={formatCost(stats.totalCost)} />
         <StatCard title="Tool Success Rate" value={formatPct(toolSuccessRate)} accent={toolSuccessRate < 0.9 ? 'red' : toolSuccessRate < 0.95 ? 'yellow' : 'green'} />
         <StatCard title="Cost / Completion" value={totalCompleted > 0 ? formatCost(stats.totalCost / totalCompleted) : 'N/A'} />
-        <StatCard title="Cache Savings" value={cacheSavings > 0 ? formatCost(cacheSavings) : 'N/A'} accent={cacheSavings > 0 ? 'green' : undefined} />
+        <StatCard title="Wasted Cost" value={stats.wastedCost > 0 ? formatCost(stats.wastedCost) : '$0.00'} accent={stats.wastedCost > 0.5 ? 'red' : stats.wastedCost > 0 ? 'yellow' : undefined} />
         <StatCard title="Agents Detected" value={String(agents.length)} />
       </div>
 
@@ -388,6 +464,51 @@ function SessionsTab({ sessions, loading }: { sessions: Session[]; loading: bool
 
 // ─── Costs Tab ────────────────────────────────────────────────────────────────
 
+function CostTrendChart({ dailyCosts }: { dailyCosts: DailyCost[] }) {
+  if (!dailyCosts || dailyCosts.length === 0) return null;
+
+  // Pivot daily costs into { date, claude-code, kiro, codex } for stacked line chart
+  const dateMap = new Map<string, Record<string, string | number>>();
+  const agentsInData = new Set<string>();
+  for (const dc of dailyCosts) {
+    agentsInData.add(dc.agent);
+    const entry = dateMap.get(dc.date) ?? { date: dc.date };
+    entry[dc.agent] = ((entry[dc.agent] as number) ?? 0) + dc.cost;
+    dateMap.set(dc.date, entry);
+  }
+  const chartData = Array.from(dateMap.values()).sort((a, b) => (a.date as string).localeCompare(b.date as string));
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium">Daily Cost Trend</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <ResponsiveContainer width="100%" height={250}>
+          <LineChart data={chartData}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="date" tickFormatter={(d: string) => d.slice(5)} fontSize={11} />
+            <YAxis tickFormatter={(v: number) => `$${v.toFixed(2)}`} fontSize={11} />
+            <Tooltip formatter={(v: number) => formatCost(v)} labelFormatter={(d: string) => d} />
+            <Legend />
+            {[...agentsInData].map(agent => (
+              <Line
+                key={agent}
+                type="monotone"
+                dataKey={agent}
+                name={AGENT_LABELS[agent] ?? agent}
+                stroke={AGENT_COLORS[agent] ?? '#6b7280'}
+                strokeWidth={2}
+                dot={false}
+              />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+      </CardContent>
+    </Card>
+  );
+}
+
 function CostsTab({ costs, loading }: { costs: CostAnalytics | null; loading: boolean }) {
   if (loading || !costs) return <Skeleton className="h-64 w-full" />;
 
@@ -397,6 +518,9 @@ function CostsTab({ costs, loading }: { costs: CostAnalytics | null; loading: bo
         <StatCard title="Total Estimated Cost" value={formatCost(costs.total_cost)} />
         <StatCard title="Cache Savings" value={formatCost(costs.total_savings)} />
       </div>
+
+      {/* Cost trend chart */}
+      <CostTrendChart dailyCosts={costs.daily_costs} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card>
@@ -758,6 +882,13 @@ function OverviewSkeleton() {
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
+const DATE_RANGE_LABELS: Record<DateRangePreset, string> = {
+  today: 'Today',
+  '7d': 'Last 7 Days',
+  '30d': 'Last 30 Days',
+  all: 'All Time',
+};
+
 export const CodingAgentsPage: React.FC = () => {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [stats, setStats] = useState<CombinedStats | null>(null);
@@ -769,6 +900,19 @@ export const CodingAgentsPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('overview');
   const [error, setError] = useState<string | null>(null);
+  const [rangePreset, setRangePreset] = useState<DateRangePreset>('today');
+
+  const range = getDateRange(rangePreset);
+
+  // Reset lazy-loaded tab data when range changes
+  const handleRangeChange = (preset: DateRangePreset) => {
+    setRangePreset(preset);
+    setSessions([]);
+    setCosts(null);
+    setActivity(null);
+    setTools(null);
+    setEfficiency(null);
+  };
 
   useEffect(() => {
     const load = async () => {
@@ -776,7 +920,7 @@ export const CodingAgentsPage: React.FC = () => {
         setLoading(true);
         const [agentData, statsData] = await Promise.all([
           fetchJson<{ agents: AgentInfo[] }>('/api/coding-agents/available'),
-          fetchJson<CombinedStats>('/api/coding-agents/stats'),
+          fetchJson<CombinedStats>(buildQuery('/api/coding-agents/stats', range)),
         ]);
         setAgents(agentData.agents);
         setStats(statsData);
@@ -791,53 +935,65 @@ export const CodingAgentsPage: React.FC = () => {
       }
     };
     load();
-  }, []);
+  }, [rangePreset]);
 
   // Lazy-load tab data
   useEffect(() => {
     if (activeTab === 'sessions' && sessions.length === 0) {
-      fetchJson<{ sessions: Session[] }>('/api/coding-agents/sessions?limit=200')
+      fetchJson<{ sessions: Session[] }>(buildQuery('/api/coding-agents/sessions', range, { limit: '200' }))
         .then(d => setSessions(d.sessions))
         .catch(() => {});
     }
     if (activeTab === 'costs' && !costs) {
-      fetchJson<CostAnalytics>('/api/coding-agents/costs')
+      fetchJson<CostAnalytics>(buildQuery('/api/coding-agents/costs', range))
         .then(d => setCosts(d))
         .catch(() => {});
     }
     if (activeTab === 'activity' && !activity) {
-      fetchJson<ActivityData>('/api/coding-agents/activity')
+      fetchJson<ActivityData>(buildQuery('/api/coding-agents/activity', range))
         .then(d => setActivity(d))
         .catch(() => {});
     }
     if (activeTab === 'tools' && !tools) {
-      fetchJson<ToolsData>('/api/coding-agents/tools')
+      fetchJson<ToolsData>(buildQuery('/api/coding-agents/tools', range))
         .then(d => setTools(d))
         .catch(() => {});
     }
     if (activeTab === 'efficiency' && !efficiency) {
-      fetchJson<EfficiencyData>('/api/coding-agents/efficiency')
+      fetchJson<EfficiencyData>(buildQuery('/api/coding-agents/efficiency', range))
         .then(d => setEfficiency(d))
         .catch(() => {});
     }
-  }, [activeTab]);
+  }, [activeTab, rangePreset]);
 
   return (
     <div className="p-6 space-y-6 max-w-7xl">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Coding Agent Analytics</h1>
-        <p className="text-muted-foreground">
-          Usage analytics across your coding agents
-          {agents.length > 0 && (
-            <span className="ml-2">
-              {agents.map(a => (
-                <Badge key={a.name} variant="outline" className="ml-1" style={{ borderColor: AGENT_COLORS[a.name], color: AGENT_COLORS[a.name] }}>
-                  {a.displayName}
-                </Badge>
-              ))}
-            </span>
-          )}
-        </p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Coding Agent Analytics</h1>
+          <p className="text-muted-foreground">
+            Usage analytics across your coding agents
+            {agents.length > 0 && (
+              <span className="ml-2">
+                {agents.map(a => (
+                  <Badge key={a.name} variant="outline" className="ml-1" style={{ borderColor: AGENT_COLORS[a.name], color: AGENT_COLORS[a.name] }}>
+                    {a.displayName}
+                  </Badge>
+                ))}
+              </span>
+            )}
+          </p>
+        </div>
+        <Select value={rangePreset} onValueChange={(v) => handleRangeChange(v as DateRangePreset)}>
+          <SelectTrigger className="w-40">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {(Object.keys(DATE_RANGE_LABELS) as DateRangePreset[]).map(k => (
+              <SelectItem key={k} value={k}>{DATE_RANGE_LABELS[k]}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       {error && agents.length === 0 ? (
@@ -863,7 +1019,7 @@ export const CodingAgentsPage: React.FC = () => {
           </TabsList>
 
           <TabsContent value="overview" className="mt-4">
-            <OverviewTab stats={stats} agents={agents} onTabChange={setActiveTab} />
+            <OverviewTab stats={stats} agents={agents} onTabChange={setActiveTab} rangePreset={rangePreset} />
           </TabsContent>
           <TabsContent value="sessions" className="mt-4">
             <SessionsTab sessions={sessions} loading={activeTab === 'sessions' && sessions.length === 0 && loading} />

@@ -85,6 +85,7 @@ async function deriveSessionMeta(
   let hasMcp = false;
   let lastMessageType = '';
   let lastAssistantHasText = false;
+  let model = '';
 
   try {
     const raw = await fs.readFile(filePath, 'utf-8');
@@ -121,6 +122,7 @@ async function deriveSessionMeta(
           lastMessageType = 'assistant';
           lastAssistantHasText = false;
           const msg = obj.message;
+          if (msg?.model && !model) model = msg.model;
           if (msg?.usage) {
             inputTokens += msg.usage.input_tokens ?? 0;
             outputTokens += msg.usage.output_tokens ?? 0;
@@ -151,7 +153,8 @@ async function deriveSessionMeta(
   const start = new Date(startTime).getTime();
   const end = lastTime ? new Date(lastTime).getTime() : start;
   const durationMinutes = (end - start) / 60_000;
-  const cost = estimateCost('claude-opus-4-6', inputTokens, outputTokens, cacheWrite, cacheRead);
+  const costModel = model || 'claude-opus-4-6';
+  const cost = estimateCost(costModel, inputTokens, outputTokens, cacheWrite, cacheRead);
 
   // Session is completed if the last message was an assistant message with text
   const sessionCompleted = lastMessageType === 'assistant' && lastAssistantHasText;
@@ -175,6 +178,7 @@ async function deriveSessionMeta(
     first_prompt: firstPrompt,
     estimated_cost: cost,
     uses_mcp: hasMcp,
+    model: model || undefined,
   };
 }
 

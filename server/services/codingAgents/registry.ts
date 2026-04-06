@@ -12,8 +12,11 @@ import type {
   CodingAgentReader,
   AgentKind,
   AgentSession,
+  AgentStats,
   CombinedStats,
   DailyActivity,
+  DateRange,
+  DailyCost,
   CostAnalytics,
   ProjectCost,
   ModelCostBreakdown,
@@ -27,6 +30,70 @@ import { generateInsights } from './insights';
 import { ClaudeCodeReader } from './readers/claudeCode';
 import { KiroReader } from './readers/kiro';
 import { CodexReader } from './readers/codex';
+
+/** Filter sessions by date range */
+function filterByDate(sessions: AgentSession[], range?: DateRange): AgentSession[] {
+  if (!range?.from && !range?.to) return sessions;
+  return sessions.filter(s => {
+    const date = s.start_time.slice(0, 10);
+    if (range.from && date < range.from) return false;
+    if (range.to && date > range.to) return false;
+    return true;
+  });
+}
+
+/** Compute AgentStats from a list of sessions for a given agent */
+function computeStatsFromSessions(sessions: AgentSession[], agent: AgentKind): AgentStats {
+  const dailyMap = new Map<string, DailyActivity>();
+  let totalCost = 0;
+  let totalCacheSavings = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalToolCalls = 0;
+  let totalToolErrors = 0;
+  let totalDuration = 0;
+  let completedSessions = 0;
+
+  for (const s of sessions) {
+    totalCost += s.estimated_cost;
+    totalCacheSavings += s.cache_read_input_tokens > 0 ? s.estimated_cost * 0.1 : 0; // approximate
+    totalInputTokens += s.input_tokens;
+    totalOutputTokens += s.output_tokens;
+    totalDuration += s.duration_minutes;
+    totalToolErrors += s.total_tool_errors;
+    if (s.session_completed) completedSessions++;
+    const toolCallCount = Object.values(s.tool_counts).reduce((a, b) => a + b, 0);
+    totalToolCalls += toolCallCount;
+
+    const date = s.start_time.slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      const existing = dailyMap.get(date) ?? { date, messageCount: 0, sessionCount: 0, toolCallCount: 0 };
+      existing.messageCount += s.user_message_count + s.assistant_message_count;
+      existing.sessionCount += 1;
+      existing.toolCallCount += toolCallCount;
+      dailyMap.set(date, existing);
+    }
+  }
+
+  const dailyActivity = Array.from(dailyMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+
+  return {
+    agent,
+    totalSessions: sessions.length,
+    totalCost,
+    totalCacheSavings,
+    totalInputTokens,
+    totalOutputTokens,
+    totalToolCalls,
+    totalToolErrors,
+    toolSuccessRate: totalToolCalls > 0 ? (totalToolCalls - totalToolErrors) / totalToolCalls : 1,
+    completedSessions,
+    costPerCompletion: completedSessions > 0 ? totalCost / completedSessions : 0,
+    activeDays: dailyActivity.length,
+    avgSessionMinutes: sessions.length > 0 ? totalDuration / sessions.length : 0,
+    dailyActivity,
+  };
+}
 
 class CodingAgentRegistry {
   private readers: CodingAgentReader[] = [
@@ -48,19 +115,32 @@ class CodingAgentRegistry {
     return this.readers.find(r => r.agentName === agent);
   }
 
-  /** Get all sessions from all available agents, merged and sorted */
-  async getAllSessions(): Promise<AgentSession[]> {
+  /** Get all sessions from all available agents, optionally filtered by date range */
+  async getAllSessions(range?: DateRange): Promise<AgentSession[]> {
     const readers = await this.getAvailableReaders();
     const allSessions = await Promise.all(readers.map(r => r.getSessions()));
-    return allSessions.flat().sort((a, b) =>
+    const merged = allSessions.flat().sort((a, b) =>
       new Date(b.start_time).getTime() - new Date(a.start_time).getTime()
     );
+    return filterByDate(merged, range);
   }
 
-  /** Get combined stats from all available agents */
-  async getCombinedStats(): Promise<CombinedStats> {
-    const readers = await this.getAvailableReaders();
-    const allStats = await Promise.all(readers.map(r => r.getStats()));
+  /** Get combined stats from all available agents, optionally filtered by date range */
+  async getCombinedStats(range?: DateRange): Promise<CombinedStats> {
+    const sessions = await this.getAllSessions(range);
+
+    // Group sessions by agent and compute stats per agent
+    const byAgent = new Map<AgentKind, AgentSession[]>();
+    for (const s of sessions) {
+      const list = byAgent.get(s.agent) ?? [];
+      list.push(s);
+      byAgent.set(s.agent, list);
+    }
+
+    const allStats: AgentStats[] = [];
+    for (const [agent, agentSessions] of byAgent) {
+      allStats.push(computeStatsFromSessions(agentSessions, agent));
+    }
 
     // Merge daily activity across agents
     const dailyMap = new Map<string, DailyActivity>();
@@ -75,8 +155,18 @@ class CodingAgentRegistry {
     }
     const dailyActivity = Array.from(dailyMap.values()).sort((a, b) => a.date.localeCompare(b.date));
 
+    // Wasted cost: cost on abandoned sessions
+    let wastedCost = 0;
+    let abandonedSessions = 0;
+    for (const s of sessions) {
+      if (!s.session_completed && s.estimated_cost > 0) {
+        wastedCost += s.estimated_cost;
+        abandonedSessions++;
+      }
+    }
+
     const efficiency = this.computeEfficiency(allStats);
-    const insights = generateInsights(allStats, efficiency);
+    const insights = generateInsights(allStats, efficiency, wastedCost, abandonedSessions);
 
     return {
       agents: allStats,
@@ -84,13 +174,15 @@ class CodingAgentRegistry {
       totalCost: allStats.reduce((s, a) => s + a.totalCost, 0),
       totalSessions: allStats.reduce((s, a) => s + a.totalSessions, 0),
       totalTokens: allStats.reduce((s, a) => s + a.totalInputTokens + a.totalOutputTokens, 0),
+      wastedCost,
+      abandonedSessions,
       insights,
     };
   }
 
   /** Get cost analytics across all agents */
-  async getCostAnalytics(): Promise<CostAnalytics> {
-    const sessions = await this.getAllSessions();
+  async getCostAnalytics(range?: DateRange): Promise<CostAnalytics> {
+    const sessions = await this.getAllSessions(range);
 
     // Group by agent+model for model breakdown
     const modelMap = new Map<string, ModelCostBreakdown>();
@@ -132,22 +224,35 @@ class CodingAgentRegistry {
       projectMap.set(key, existing);
     }
 
+    // Daily cost breakdown by agent
+    const dailyCostMap = new Map<string, DailyCost>();
+    for (const s of sessions) {
+      const date = s.start_time.slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+      const key = `${date}:${s.agent}`;
+      const existing = dailyCostMap.get(key) ?? { date, cost: 0, agent: s.agent };
+      existing.cost += s.estimated_cost;
+      dailyCostMap.set(key, existing);
+    }
+
     const models = Array.from(modelMap.values()).sort((a, b) => b.estimated_cost - a.estimated_cost);
     const by_project = Array.from(projectMap.values())
       .sort((a, b) => b.estimated_cost - a.estimated_cost)
       .slice(0, 20);
+    const daily_costs = Array.from(dailyCostMap.values()).sort((a, b) => a.date.localeCompare(b.date));
 
     return {
       total_cost: models.reduce((s, m) => s + m.estimated_cost, 0),
       total_savings: models.reduce((s, m) => s + m.cache_savings, 0),
       models,
       by_project,
+      daily_costs,
     };
   }
 
   /** Get activity data (streaks, day-of-week, hourly) */
-  async getActivityData(): Promise<ActivityData> {
-    const sessions = await this.getAllSessions();
+  async getActivityData(range?: DateRange): Promise<ActivityData> {
+    const sessions = await this.getAllSessions(range);
 
     const activeDates = new Set<string>();
     const dowCounts = [0, 0, 0, 0, 0, 0, 0]; // Sun=0..Sat=6
@@ -180,10 +285,10 @@ class CodingAgentRegistry {
 
     const today = new Date().toISOString().slice(0, 10);
     let current = 0;
-    const d = new Date(today);
-    while (activeDates.has(d.toISOString().slice(0, 10))) {
+    const dateIter = new Date(today);
+    while (activeDates.has(dateIter.toISOString().slice(0, 10))) {
       current++;
-      d.setDate(d.getDate() - 1);
+      dateIter.setDate(dateIter.getDate() - 1);
     }
 
     // Build daily activity from sessions
@@ -208,8 +313,8 @@ class CodingAgentRegistry {
   }
 
   /** Get tool usage analytics (with error counts and success rates) */
-  async getToolsAnalytics(): Promise<ToolsAnalytics> {
-    const sessions = await this.getAllSessions();
+  async getToolsAnalytics(range?: DateRange): Promise<ToolsAnalytics> {
+    const sessions = await this.getAllSessions(range);
 
     const toolMap = new Map<string, { total: number; errors: number; sessions: Set<string>; agent: AgentKind }>();
     for (const s of sessions) {
@@ -248,14 +353,23 @@ class CodingAgentRegistry {
   }
 
   /** Get efficiency analytics for cross-agent comparison */
-  async getEfficiencyAnalytics(): Promise<EfficiencyAnalytics> {
-    const readers = await this.getAvailableReaders();
-    const allStats = await Promise.all(readers.map(r => r.getStats()));
+  async getEfficiencyAnalytics(range?: DateRange): Promise<EfficiencyAnalytics> {
+    const sessions = await this.getAllSessions(range);
+    const byAgent = new Map<AgentKind, AgentSession[]>();
+    for (const s of sessions) {
+      const list = byAgent.get(s.agent) ?? [];
+      list.push(s);
+      byAgent.set(s.agent, list);
+    }
+    const allStats: AgentStats[] = [];
+    for (const [agent, agentSessions] of byAgent) {
+      allStats.push(computeStatsFromSessions(agentSessions, agent));
+    }
     return this.computeEfficiency(allStats);
   }
 
   /** Internal: compute efficiency from pre-fetched stats */
-  private computeEfficiency(allStats: import('./types').AgentStats[]): EfficiencyAnalytics {
+  private computeEfficiency(allStats: AgentStats[]): EfficiencyAnalytics {
     const agents = allStats.map(s => ({
       agent: s.agent,
       toolSuccessRate: s.toolSuccessRate,

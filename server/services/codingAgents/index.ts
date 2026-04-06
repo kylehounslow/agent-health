@@ -14,6 +14,8 @@ export type {
   ToolsAnalytics,
   ToolSummary,
   DailyActivity,
+  DailyCost,
+  DateRange,
   EfficiencyAnalytics,
   Insight,
   CodingAgentReader,

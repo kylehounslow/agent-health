@@ -67,7 +67,21 @@ export interface CombinedStats {
   totalCost: number;
   totalSessions: number;
   totalTokens: number;
+  wastedCost: number;
+  abandonedSessions: number;
   insights: Insight[];
+}
+
+/** Date range filter for API queries */
+export interface DateRange {
+  from?: string; // ISO date string (YYYY-MM-DD)
+  to?: string;   // ISO date string (YYYY-MM-DD)
+}
+
+export interface DailyCost {
+  date: string;
+  cost: number;
+  agent: AgentKind;
 }
 
 // ─── Efficiency ─────────────────────────────────────────────────────────────
@@ -127,6 +141,7 @@ export interface CostAnalytics {
   total_savings: number;
   models: ModelCostBreakdown[];
   by_project: ProjectCost[];
+  daily_costs: DailyCost[];
 }
 
 // ─── Activity ────────────────────────────────────────────────────────────────
