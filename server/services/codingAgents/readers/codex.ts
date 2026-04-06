@@ -1,0 +1,196 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/**
+ * Codex CLI reader — parses ~/.codex/sessions/ JSONL rollout files.
+ * Token counts are not persisted to rollout files, so cost estimation
+ * is unavailable. We still capture session activity and tool usage.
+ */
+
+import fs from 'fs/promises';
+import path from 'path';
+import os from 'os';
+import type { CodingAgentReader, AgentSession, AgentStats, DailyActivity } from '../types';
+
+const CODEX_DIR = path.join(os.homedir(), '.codex');
+
+function codexPath(...segments: string[]): string {
+  return path.join(CODEX_DIR, ...segments);
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyObj = Record<string, any>;
+
+/**
+ * Recursively find all rollout-*.jsonl files under ~/.codex/sessions/
+ */
+async function findRolloutFiles(dir: string): Promise<string[]> {
+  const results: string[] = [];
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        results.push(...await findRolloutFiles(fullPath));
+      } else if (entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) {
+        results.push(fullPath);
+      }
+    }
+  } catch { /* skip */ }
+  return results;
+}
+
+async function deriveSessionFromRollout(filePath: string): Promise<AgentSession | null> {
+  const filename = path.basename(filePath, '.jsonl');
+  // rollout-YYYY-MM-DDTHH-MM-SS-sssZ-{conversation_id}.jsonl
+  const sessionId = filename.replace('rollout-', '');
+
+  let startTime = '';
+  let lastTime = '';
+  let userCount = 0;
+  let assistantCount = 0;
+  const toolCounts: Record<string, number> = {};
+  let firstPrompt = '';
+  let projectPath = '';
+  let model = '';
+
+  try {
+    const raw = await fs.readFile(filePath, 'utf-8');
+    const lines = raw.split(/\r?\n/).filter(Boolean);
+    for (const line of lines) {
+      try {
+        const obj: AnyObj = JSON.parse(line);
+        const ts = obj.timestamp as string;
+        if (ts) {
+          if (!startTime) startTime = ts;
+          lastTime = ts;
+        }
+
+        const item = obj.item;
+        if (!item) continue;
+
+        // SessionMeta contains cwd, model info
+        if (item.type === 'SessionMeta') {
+          if (item.working_directory) projectPath = item.working_directory;
+          if (item.model) model = item.model;
+        }
+
+        // ResponseItem: user or assistant messages
+        if (item.type === 'message') {
+          if (item.role === 'user') {
+            userCount++;
+            if (Array.isArray(item.content)) {
+              const text = item.content.find((c: AnyObj) => c.type === 'input_text');
+              if (text?.text && !firstPrompt) firstPrompt = text.text.slice(0, 500);
+            }
+          }
+          if (item.role === 'assistant') {
+            assistantCount++;
+          }
+        }
+
+        // EventMsg: tool executions
+        if (item.type === 'EventMsg' || item.type === 'function_call') {
+          const toolName = item.name ?? item.tool_name ?? 'unknown';
+          toolCounts[toolName] = (toolCounts[toolName] ?? 0) + 1;
+        }
+
+        // Function call outputs in responses API format
+        if (item.type === 'function_call_output') {
+          // These are results, tool was already counted on the call
+        }
+      } catch { /* skip malformed */ }
+    }
+  } catch {
+    return null;
+  }
+
+  if (!startTime) return null;
+
+  const start = new Date(startTime).getTime();
+  const end = lastTime ? new Date(lastTime).getTime() : start;
+  const durationMinutes = (end - start) / 60_000;
+
+  return {
+    agent: 'codex',
+    session_id: sessionId,
+    project_path: projectPath || 'unknown',
+    start_time: startTime,
+    duration_minutes: durationMinutes,
+    user_message_count: userCount,
+    assistant_message_count: assistantCount,
+    tool_counts: toolCounts,
+    input_tokens: 0, // Not persisted in rollout files
+    output_tokens: 0,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0,
+    first_prompt: firstPrompt,
+    estimated_cost: 0, // Cannot estimate without token counts
+    uses_mcp: false,
+    model: model || undefined,
+  };
+}
+
+export class CodexReader implements CodingAgentReader {
+  readonly agentName = 'codex' as const;
+  readonly displayName = 'Codex CLI';
+
+  async isAvailable(): Promise<boolean> {
+    try {
+      await fs.access(codexPath('sessions'));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async getSessions(): Promise<AgentSession[]> {
+    const files = await findRolloutFiles(codexPath('sessions'));
+    const results: AgentSession[] = [];
+    for (const f of files) {
+      const session = await deriveSessionFromRollout(f);
+      if (session) results.push(session);
+    }
+    return results.sort((a, b) => new Date(b.start_time).getTime() - new Date(a.start_time).getTime());
+  }
+
+  async getStats(): Promise<AgentStats> {
+    const sessions = await this.getSessions();
+    const dailyMap = new Map<string, DailyActivity>();
+
+    let totalToolCalls = 0;
+    let totalDuration = 0;
+
+    for (const s of sessions) {
+      totalDuration += s.duration_minutes;
+      const toolCallCount = Object.values(s.tool_counts).reduce((a, b) => a + b, 0);
+      totalToolCalls += toolCallCount;
+
+      const date = s.start_time.slice(0, 10);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        const existing = dailyMap.get(date) ?? { date, messageCount: 0, sessionCount: 0, toolCallCount: 0 };
+        existing.messageCount += s.user_message_count + s.assistant_message_count;
+        existing.sessionCount += 1;
+        existing.toolCallCount += toolCallCount;
+        dailyMap.set(date, existing);
+      }
+    }
+
+    const dailyActivity = Array.from(dailyMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+
+    return {
+      agent: 'codex',
+      totalSessions: sessions.length,
+      totalCost: 0, // Token counts not available
+      totalCacheSavings: 0,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalToolCalls,
+      activeDays: dailyActivity.length,
+      avgSessionMinutes: sessions.length > 0 ? totalDuration / sessions.length : 0,
+      dailyActivity,
+    };
+  }
+}

@@ -1,0 +1,234 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/**
+ * Claude Code reader — parses ~/.claude/ session JSONL files.
+ * Ported from cc-lens (MIT) claude-reader.ts with adaptations for agent-health.
+ */
+
+import fs from 'fs/promises';
+import path from 'path';
+import os from 'os';
+import type { CodingAgentReader, AgentSession, AgentStats, DailyActivity } from '../types';
+import { estimateCost, estimateCacheSavings } from '../pricing';
+
+const CLAUDE_DIR = path.join(os.homedir(), '.claude');
+
+function claudePath(...segments: string[]): string {
+  return path.join(CLAUDE_DIR, ...segments);
+}
+
+function stripXmlTags(text: string): string {
+  return text.replace(/<[^>]+>[\s\S]*?<\/[^>]+>/g, '').replace(/<[^>]+\/>/g, '').replace(/<[^>]+>/g, '').trim();
+}
+
+async function listProjectSlugs(): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(claudePath('projects'), { withFileTypes: true });
+    return entries.filter(e => e.isDirectory()).map(e => e.name);
+  } catch {
+    return [];
+  }
+}
+
+async function listProjectJSONLFiles(slug: string): Promise<string[]> {
+  try {
+    const dir = claudePath('projects', slug);
+    const files = await fs.readdir(dir);
+    return files.filter(f => f.endsWith('.jsonl')).map(f => path.join(dir, f));
+  } catch {
+    return [];
+  }
+}
+
+async function resolveProjectPath(slug: string): Promise<string> {
+  const files = await listProjectJSONLFiles(slug);
+  for (const f of files) {
+    try {
+      const raw = await fs.readFile(f, 'utf-8');
+      const lines = raw.split(/\r?\n/);
+      for (const line of lines.slice(0, 50)) {
+        if (!line.trim()) continue;
+        try {
+          const obj = JSON.parse(line);
+          if (obj.cwd && typeof obj.cwd === 'string') return obj.cwd;
+        } catch { /* skip */ }
+      }
+    } catch { /* next file */ }
+  }
+  // Fallback: decode slug
+  return slug.replace(/-/g, '/');
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyObj = Record<string, any>;
+
+async function deriveSessionMeta(
+  filePath: string,
+  sessionId: string,
+  projectPath: string,
+): Promise<AgentSession | null> {
+  let startTime = '';
+  let lastTime = '';
+  let userCount = 0;
+  let assistantCount = 0;
+  const toolCounts: Record<string, number> = {};
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheRead = 0;
+  let cacheWrite = 0;
+  let firstPrompt = '';
+  let hasMcp = false;
+
+  try {
+    const raw = await fs.readFile(filePath, 'utf-8');
+    const lines = raw.split(/\r?\n/).filter(Boolean);
+    for (const line of lines) {
+      try {
+        const obj: AnyObj = JSON.parse(line);
+        const ts = obj.timestamp as string;
+        if (ts) {
+          if (!startTime) startTime = ts;
+          lastTime = ts;
+        }
+        if (obj.type === 'user') {
+          userCount++;
+          const content = obj.message?.content;
+          if (typeof content === 'string' && !firstPrompt) {
+            firstPrompt = stripXmlTags(content).slice(0, 500);
+          } else if (Array.isArray(content)) {
+            const text = content.find((c: AnyObj) => c.type === 'text');
+            if (text?.text && !firstPrompt) firstPrompt = stripXmlTags(text.text).slice(0, 500);
+          }
+        }
+        if (obj.type === 'assistant') {
+          assistantCount++;
+          const msg = obj.message;
+          if (msg?.usage) {
+            inputTokens += msg.usage.input_tokens ?? 0;
+            outputTokens += msg.usage.output_tokens ?? 0;
+            cacheRead += msg.usage.cache_read_input_tokens ?? 0;
+            cacheWrite += msg.usage.cache_creation_input_tokens ?? 0;
+          }
+          if (Array.isArray(msg?.content)) {
+            for (const c of msg.content) {
+              if (c.type === 'tool_use' && c.name) {
+                toolCounts[c.name] = (toolCounts[c.name] ?? 0) + 1;
+                if (c.name.startsWith('mcp__')) hasMcp = true;
+              }
+            }
+          }
+        }
+      } catch { /* skip malformed */ }
+    }
+  } catch {
+    return null;
+  }
+
+  if (!startTime) return null;
+
+  const start = new Date(startTime).getTime();
+  const end = lastTime ? new Date(lastTime).getTime() : start;
+  const durationMinutes = (end - start) / 60_000;
+
+  const cost = estimateCost('claude-opus-4-6', inputTokens, outputTokens, cacheWrite, cacheRead);
+
+  return {
+    agent: 'claude-code',
+    session_id: sessionId,
+    project_path: projectPath,
+    start_time: startTime,
+    duration_minutes: durationMinutes,
+    user_message_count: userCount,
+    assistant_message_count: assistantCount,
+    tool_counts: toolCounts,
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    cache_creation_input_tokens: cacheWrite,
+    cache_read_input_tokens: cacheRead,
+    first_prompt: firstPrompt,
+    estimated_cost: cost,
+    uses_mcp: hasMcp,
+  };
+}
+
+export class ClaudeCodeReader implements CodingAgentReader {
+  readonly agentName = 'claude-code' as const;
+  readonly displayName = 'Claude Code';
+
+  async isAvailable(): Promise<boolean> {
+    try {
+      await fs.access(claudePath('projects'));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async getSessions(): Promise<AgentSession[]> {
+    const results: AgentSession[] = [];
+    try {
+      const slugs = await listProjectSlugs();
+      for (const slug of slugs) {
+        const projectPath = await resolveProjectPath(slug);
+        const files = await listProjectJSONLFiles(slug);
+        for (const filePath of files) {
+          const sessionId = path.basename(filePath, '.jsonl');
+          const meta = await deriveSessionMeta(filePath, sessionId, projectPath);
+          if (meta) results.push(meta);
+        }
+      }
+      return results.sort((a, b) => new Date(b.start_time).getTime() - new Date(a.start_time).getTime());
+    } catch {
+      return [];
+    }
+  }
+
+  async getStats(): Promise<AgentStats> {
+    const sessions = await this.getSessions();
+    const dailyMap = new Map<string, DailyActivity>();
+
+    let totalCost = 0;
+    let totalCacheSavings = 0;
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    let totalToolCalls = 0;
+    let totalDuration = 0;
+
+    for (const s of sessions) {
+      totalCost += s.estimated_cost;
+      totalCacheSavings += estimateCacheSavings('claude-opus-4-6', s.cache_read_input_tokens);
+      totalInputTokens += s.input_tokens;
+      totalOutputTokens += s.output_tokens;
+      totalDuration += s.duration_minutes;
+      const toolCallCount = Object.values(s.tool_counts).reduce((a, b) => a + b, 0);
+      totalToolCalls += toolCallCount;
+
+      const date = s.start_time.slice(0, 10);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        const existing = dailyMap.get(date) ?? { date, messageCount: 0, sessionCount: 0, toolCallCount: 0 };
+        existing.messageCount += s.user_message_count + s.assistant_message_count;
+        existing.sessionCount += 1;
+        existing.toolCallCount += toolCallCount;
+        dailyMap.set(date, existing);
+      }
+    }
+
+    const dailyActivity = Array.from(dailyMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+
+    return {
+      agent: 'claude-code',
+      totalSessions: sessions.length,
+      totalCost,
+      totalCacheSavings,
+      totalInputTokens,
+      totalOutputTokens,
+      totalToolCalls,
+      activeDays: dailyActivity.length,
+      avgSessionMinutes: sessions.length > 0 ? totalDuration / sessions.length : 0,
+      dailyActivity,
+    };
+  }
+}

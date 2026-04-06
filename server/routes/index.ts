@@ -20,6 +20,7 @@ import observabilityRoutes from './observability';
 import configRoutes from './config';
 import evaluationRoutes from './evaluation';
 import debugRoutes from './debug';
+import codingAgentsRoutes from './codingAgents';
 
 const router = Router();
 
@@ -41,5 +42,6 @@ router.use(observabilityRoutes); // /api/observability/*
 router.use(configRoutes);        // /api/agents, /api/models
 router.use(evaluationRoutes);    // /api/evaluate
 router.use(debugRoutes);         // /api/debug
+router.use(codingAgentsRoutes);  // /api/coding-agents/*
 
 export default router;

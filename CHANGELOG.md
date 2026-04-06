@@ -10,6 +10,12 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 ## [Unreleased]
 
 ### Added
+- Coding Agent Analytics: unified dashboard for Claude Code, Kiro, and Codex CLI usage data
+- Plugin-based reader system for ingesting local session data from ~/.claude/, ~/.kiro/, and ~/.codex/
+- API routes for coding agent stats, sessions, costs, activity patterns, and tool usage (/api/coding-agents/*)
+- Frontend page with Overview, Sessions, Costs, Activity, and Tools tabs at /coding-agents
+- Pricing engine covering Claude, Bedrock, and OpenAI models for cost estimation
+- Unified tool categorization across all three coding agents
 - AWS SigV4 authentication support for OpenSearch clusters with `ClusterAuthType` (`none` | `basic` | `sigv4`) ([#85](https://github.com/opensearch-project/agent-health/pull/85))
 - OpenSearch client factory (`opensearchClientFactory.ts`) for centralized client creation with basic, none, or SigV4 auth ([#85](https://github.com/opensearch-project/agent-health/pull/85))
 - Mapping validation service to detect incompatible field types in OpenSearch indexes ([#85](https://github.com/opensearch-project/agent-health/pull/85))

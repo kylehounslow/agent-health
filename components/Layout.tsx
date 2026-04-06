@@ -11,6 +11,7 @@ import {
   Gauge,
   Activity,
   Search,
+  BarChart3,
 } from "lucide-react";
 import OpenSearchLogoDark from "@/assets/opensearch-logo.svg";
 import OpenSearchLogoLight from "@/assets/opensearch-logo-light.svg";
@@ -62,6 +63,7 @@ export const useSidebarCollapse = () => {
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "Overview", tooltip: "Dashboard and quick stats", testId: "nav-overview" },
   { to: "/agent-traces", icon: Activity, label: "Agent Traces", tooltip: "View and debug agent executions", testId: "nav-agent-traces" },
+  { to: "/coding-agents", icon: BarChart3, label: "Coding Agents", tooltip: "Claude Code, Kiro & Codex analytics", testId: "nav-coding-agents" },
 ];
 
 const testingSubItems = [
