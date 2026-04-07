@@ -967,7 +967,7 @@ function SessionDetailPanel({ session, onClose }: { session: Session; onClose: (
 
 // ─── Sessions Tab ─────────────────────────────────────────────────────────────
 
-function SessionsTab({ range, loading: initialLoading, initialProject, initialAgent }: { range: { from?: string; to?: string }; loading: boolean; initialProject?: string; initialAgent?: string }) {
+function SessionsTab({ range, loading: initialLoading, initialProject, initialAgent, onClearFilters }: { range: { from?: string; to?: string }; loading: boolean; initialProject?: string; initialAgent?: string; onClearFilters?: () => void }) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
@@ -983,6 +983,17 @@ function SessionsTab({ range, loading: initialLoading, initialProject, initialAg
 
   useEffect(() => { if (initialProject) setProjectFilter(initialProject); }, [initialProject]);
   useEffect(() => { if (initialAgent) setAgentFilter(initialAgent); }, [initialAgent]);
+
+  const hasActiveFilters = agentFilter !== 'all' || completedFilter !== 'all' || !!projectFilter || !!search;
+  const clearAllFilters = () => {
+    setAgentFilter('all');
+    setCompletedFilter('all');
+    setProjectFilter('');
+    setSearch('');
+    setSearchInput('');
+    setPage(0);
+    onClearFilters?.();
+  };
 
   const loadSessions = useCallback(async () => {
     setLoading(true);
@@ -1034,10 +1045,19 @@ function SessionsTab({ range, loading: initialLoading, initialProject, initialAg
         {projectFilter && (
           <Badge variant="secondary" className="text-xs flex items-center gap-1">
             Project: {projectFilter.split('/').pop()}
-            <button onClick={() => { setProjectFilter(''); setPage(0); }} className="ml-1 hover:text-foreground">&times;</button>
+            <button onClick={() => { setProjectFilter(''); setPage(0); onClearFilters?.(); }} className="ml-1 hover:text-foreground">&times;</button>
           </Badge>
         )}
-        <span className="text-sm text-muted-foreground">{total} sessions</span>
+        {agentFilter !== 'all' && (
+          <Badge variant="secondary" className="text-xs flex items-center gap-1">
+            Agent: {AGENT_LABELS[agentFilter] ?? agentFilter}
+            <button onClick={() => { setAgentFilter('all'); setPage(0); onClearFilters?.(); }} className="ml-1 hover:text-foreground">&times;</button>
+          </Badge>
+        )}
+        {hasActiveFilters && (
+          <button onClick={clearAllFilters} className="text-xs text-muted-foreground hover:text-foreground underline">Clear all filters</button>
+        )}
+        <span className="text-sm text-muted-foreground ml-auto">{total} sessions</span>
       </div>
 
       {loading ? <TabSkeleton label="Loading sessions..." table /> : (
@@ -2395,11 +2415,19 @@ export const CodingAgentsPage: React.FC = () => {
   const [sessionAgentFilter, setSessionAgentFilter] = useState<string | undefined>();
 
   const handleSelectProject = (projectPath: string) => {
+    setSessionAgentFilter(undefined);
     setSessionProjectFilter(projectPath);
     setActiveTab('sessions');
   };
   const handleAgentFilter = (agent: string) => {
+    setSessionProjectFilter(undefined);
     setSessionAgentFilter(agent);
+  };
+  // Navigate to a tab without carrying over stale filters
+  const navigateTab = (tab: string) => {
+    setSessionAgentFilter(undefined);
+    setSessionProjectFilter(undefined);
+    setActiveTab(tab);
   };
 
   const range = getDateRange(rangePreset);
@@ -2542,7 +2570,7 @@ export const CodingAgentsPage: React.FC = () => {
           </CardContent>
         </Card>
       ) : (
-        <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <Tabs value={activeTab} onValueChange={navigateTab}>
           <TabsList className="flex-wrap">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="sessions">Sessions</TabsTrigger>
@@ -2559,7 +2587,7 @@ export const CodingAgentsPage: React.FC = () => {
             <OverviewTab stats={stats} agents={agents} onTabChange={setActiveTab} rangePreset={rangePreset} onRangeChange={setRangePreset} onAgentFilter={handleAgentFilter} />
           </TabsContent>
           <TabsContent value="sessions" className="mt-4">
-            <SessionsTab range={range} loading={loading} initialProject={sessionProjectFilter} initialAgent={sessionAgentFilter} />
+            <SessionsTab range={range} loading={loading} initialProject={sessionProjectFilter} initialAgent={sessionAgentFilter} onClearFilters={() => { setSessionAgentFilter(undefined); setSessionProjectFilter(undefined); }} />
           </TabsContent>
           <TabsContent value="projects" className="mt-4">
             <ProjectsTab projects={projects} loading={activeTab === 'projects' && !projects} onSelectProject={handleSelectProject} />
