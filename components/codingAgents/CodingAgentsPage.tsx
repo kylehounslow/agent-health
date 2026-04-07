@@ -358,6 +358,7 @@ const TOOLTIP_STYLE = {
     borderRadius: '6px',
   },
   labelStyle: { color: 'hsl(var(--foreground))' },
+  itemStyle: { color: 'hsl(var(--foreground))' },
 };
 const AXIS_PROPS = {
   tick: { fontSize: 12 },
@@ -366,14 +367,22 @@ const AXIS_PROPS = {
   axisLine: false as const,
 };
 
+/** Format a Date as YYYY-MM-DD in local timezone (NOT UTC). */
+function localDateStr(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 function getDateRange(preset: DateRangePreset): { from?: string; to?: string } {
   if (preset === 'all') return {};
   const today = new Date();
-  const to = today.toISOString().slice(0, 10);
+  const to = localDateStr(today);
   if (preset === 'today') return { from: to, to };
   const d = new Date(today);
   d.setDate(d.getDate() - (preset === '7d' ? 6 : 29));
-  return { from: d.toISOString().slice(0, 10), to };
+  return { from: localDateStr(d), to };
 }
 
 function buildQuery(basePath: string, range: { from?: string; to?: string }, extra?: Record<string, string>): string {
@@ -488,154 +497,72 @@ function TodaySummary({ stats }: { stats: CombinedStats }) {
 
 // ─── Overview Tab ─────────────────────────────────────────────────────────────
 
-function OverviewWelcome({ agents, rangePreset, onRangeChange }: { agents: AgentInfo[]; rangePreset: DateRangePreset; onRangeChange: (p: DateRangePreset) => void }) {
-  const detected = agents.map(a => a.displayName || AGENT_LABELS[a.name] || a.name);
-  const hasClaudeCode = agents.some(a => a.name === 'claude-code');
-  const hasKiro = agents.some(a => a.name === 'kiro');
-  const hasCodex = agents.some(a => a.name === 'codex');
+const GETTING_STARTED_KEY = 'agent-health:getting-started-dismissed';
 
+function GettingStartedBanner({ agents, rangePreset, onRangeChange, onDismiss, hasData }: {
+  agents: AgentInfo[]; rangePreset: DateRangePreset; onRangeChange: (p: DateRangePreset) => void; onDismiss: () => void; hasData: boolean;
+}) {
   return (
-    <div className="space-y-6">
-      {/* Hero welcome */}
-      <Card className="border-dashed">
-        <CardContent className="pt-8 pb-8 text-center max-w-xl mx-auto">
-          <h3 className="text-lg font-semibold mb-2">Getting Started</h3>
-          <p className="text-sm text-muted-foreground mb-1">
-            This dashboard automatically reads your local coding agent session history to show cost, activity, tool usage, and productivity insights.
-          </p>
-          {detected.length > 0 && (
-            <p className="text-sm text-muted-foreground mt-3">
-              <span className="font-medium text-foreground">{detected.join(' and ')}</span> detected on this machine
-              {rangePreset === 'today' ? ' — no sessions found today.' : ' — no sessions found in this time range.'}
-            </p>
-          )}
-          {rangePreset === 'today' && (
-            <div className="flex items-center justify-center gap-2 mt-4">
-              <span className="text-xs text-muted-foreground">Try a wider range:</span>
-              {(['7d', '30d', 'all'] as DateRangePreset[]).map(p => (
-                <button
-                  key={p}
-                  onClick={() => onRangeChange(p)}
-                  className="text-xs px-3 py-1.5 rounded-md border border-border hover:bg-muted transition-colors"
-                >
-                  {p === '7d' ? 'Last 7 Days' : p === '30d' ? 'Last 30 Days' : 'All Time'}
-                </button>
-              ))}
+    <Card className="border-dashed relative">
+      <button
+        onClick={onDismiss}
+        className="absolute top-3 right-3 text-muted-foreground hover:text-foreground text-sm px-1.5"
+        title="Dismiss"
+      >&times;</button>
+      <CardContent className="pt-5 pb-5">
+        <p className="text-sm font-medium mb-3">Getting Started</p>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs text-muted-foreground">
+          {agents.map(a => (
+            <div key={a.name} className="flex items-start gap-2">
+              <span className="text-green-500 mt-0.5">&#x2713;</span>
+              <span><span className="font-medium text-foreground">{a.displayName || a.name}</span> — detected and tracking sessions</span>
+            </div>
+          ))}
+          {!agents.some(a => a.name === 'claude-code') && (
+            <div className="flex items-start gap-2">
+              <span className="text-muted-foreground/50 mt-0.5">&#x25CB;</span>
+              <span>Claude Code — <code className="text-[11px] bg-muted px-1 rounded">npm i -g @anthropic-ai/claude-code</code></span>
             </div>
           )}
-        </CardContent>
-      </Card>
-
-      {/* Getting started steps per agent */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Card className={hasClaudeCode ? 'border-orange-500/40' : 'border-dashed opacity-60'}>
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-sm font-medium">Claude Code</CardTitle>
-              {hasClaudeCode
-                ? <span className="text-[10px] font-medium text-green-600 bg-green-500/10 px-1.5 py-0.5 rounded">Detected</span>
-                : <span className="text-[10px] font-medium text-muted-foreground bg-muted px-1.5 py-0.5 rounded">Not found</span>}
+          {!agents.some(a => a.name === 'kiro') && (
+            <div className="flex items-start gap-2">
+              <span className="text-muted-foreground/50 mt-0.5">&#x25CB;</span>
+              <span>Kiro — download from kiro.dev</span>
             </div>
-          </CardHeader>
-          <CardContent className="text-xs text-muted-foreground space-y-2">
-            {hasClaudeCode ? (
-              <p>Sessions are read from <code className="text-[11px] bg-muted px-1 py-0.5 rounded">~/.claude/projects/</code>. Start a conversation in any project to see data here.</p>
-            ) : (
-              <>
-                <p>Install Claude Code to track sessions, costs, and tool usage.</p>
-                <p className="font-mono text-[11px] bg-muted px-2 py-1.5 rounded">npm install -g @anthropic-ai/claude-code</p>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className={hasKiro ? 'border-purple-500/40' : 'border-dashed opacity-60'}>
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-sm font-medium">Kiro</CardTitle>
-              {hasKiro
-                ? <span className="text-[10px] font-medium text-green-600 bg-green-500/10 px-1.5 py-0.5 rounded">Detected</span>
-                : <span className="text-[10px] font-medium text-muted-foreground bg-muted px-1.5 py-0.5 rounded">Not found</span>}
+          )}
+          {!agents.some(a => a.name === 'codex') && (
+            <div className="flex items-start gap-2">
+              <span className="text-muted-foreground/50 mt-0.5">&#x25CB;</span>
+              <span>Codex — <code className="text-[11px] bg-muted px-1 rounded">npm i -g @openai/codex</code></span>
             </div>
-          </CardHeader>
-          <CardContent className="text-xs text-muted-foreground space-y-2">
-            {hasKiro ? (
-              <p>Sessions are read from <code className="text-[11px] bg-muted px-1 py-0.5 rounded">~/.kiro/</code>. Use Kiro IDE to generate session data.</p>
-            ) : (
-              <>
-                <p>Install the Kiro IDE to track AI-assisted development sessions.</p>
-                <p className="text-[11px]">Download from <span className="font-medium text-foreground">kiro.dev</span></p>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className={hasCodex ? 'border-green-500/40' : 'border-dashed opacity-60'}>
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-sm font-medium">Codex</CardTitle>
-              {hasCodex
-                ? <span className="text-[10px] font-medium text-green-600 bg-green-500/10 px-1.5 py-0.5 rounded">Detected</span>
-                : <span className="text-[10px] font-medium text-muted-foreground bg-muted px-1.5 py-0.5 rounded">Not found</span>}
-            </div>
-          </CardHeader>
-          <CardContent className="text-xs text-muted-foreground space-y-2">
-            {hasCodex ? (
-              <p>Sessions are read from <code className="text-[11px] bg-muted px-1 py-0.5 rounded">~/.codex/</code>. Run Codex in any project to see data.</p>
-            ) : (
-              <>
-                <p>Install Codex CLI to track OpenAI-powered coding sessions.</p>
-                <p className="font-mono text-[11px] bg-muted px-2 py-1.5 rounded">npm install -g @openai/codex</p>
-              </>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* What you'll see */}
-      <Card className="border-dashed">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium text-muted-foreground">What you'll see once you have session data</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center text-xs text-muted-foreground">
-            <div className="space-y-1">
-              <div className="text-lg font-semibold text-foreground/30">$--</div>
-              <p>Daily cost tracking with wasted spend detection</p>
-            </div>
-            <div className="space-y-1">
-              <div className="text-lg font-semibold text-foreground/30">--%</div>
-              <p>Session completion rate and efficiency metrics</p>
-            </div>
-            <div className="space-y-1">
-              <div className="text-lg font-semibold text-foreground/30">--</div>
-              <p>Tool success rates and error patterns</p>
-            </div>
-            <div className="space-y-1">
-              <div className="text-lg font-semibold text-foreground/30">--</div>
-              <p>Per-project breakdown and activity trends</p>
-            </div>
+          )}
+        </div>
+        {!hasData && rangePreset !== 'all' && (
+          <div className="flex items-center gap-2 mt-4 pt-3 border-t border-border/50">
+            <span className="text-xs text-muted-foreground">No sessions in this range. Try:</span>
+            {(['7d', '30d', 'all'] as DateRangePreset[]).filter(p => p !== rangePreset).map(p => (
+              <button
+                key={p}
+                onClick={() => onRangeChange(p)}
+                className="text-xs px-2.5 py-1 rounded-md border border-border hover:bg-muted transition-colors"
+              >
+                {p === '7d' ? 'Last 7 Days' : p === '30d' ? 'Last 30 Days' : 'All Time'}
+              </button>
+            ))}
           </div>
-        </CardContent>
-      </Card>
-    </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
-const GETTING_STARTED_KEY = 'agent-health:getting-started-dismissed';
-
-function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange }: { stats: CombinedStats | null; agents: AgentInfo[]; onTabChange: (tab: string) => void; rangePreset: DateRangePreset; onRangeChange: (p: DateRangePreset) => void }) {
+function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange, onAgentFilter }: { stats: CombinedStats | null; agents: AgentInfo[]; onTabChange: (tab: string) => void; rangePreset: DateRangePreset; onRangeChange: (p: DateRangePreset) => void; onAgentFilter?: (agent: string) => void }) {
   const [showGuide, setShowGuide] = useState(() => {
     try { return localStorage.getItem(GETTING_STARTED_KEY) !== 'true'; } catch { return true; }
   });
   if (!stats) return <OverviewSkeleton />;
 
   const hasData = stats.totalSessions > 0;
-
-  // No data — always show getting started (ignore dismissed state)
-  if (!hasData) {
-    return <OverviewWelcome agents={agents} rangePreset={rangePreset} onRangeChange={onRangeChange} />;
-  }
 
   const agentPieData = stats.agents.map(a => ({
     name: AGENT_LABELS[a.agent] ?? a.agent,
@@ -663,48 +590,13 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange }:
 
   return (
     <div className="space-y-6">
-      {/* Dismissable getting started guide */}
-      {showGuide && (
-        <Card className="border-dashed relative">
-          <button
-            onClick={dismissGuide}
-            className="absolute top-3 right-3 text-muted-foreground hover:text-foreground text-sm px-1.5"
-            title="Dismiss getting started guide"
-          >&times;</button>
-          <CardContent className="pt-5 pb-5">
-            <p className="text-sm font-medium mb-3">Getting Started</p>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs text-muted-foreground">
-              {agents.map(a => (
-                <div key={a.name} className="flex items-start gap-2">
-                  <span className="text-green-500 mt-0.5">&#x2713;</span>
-                  <span><span className="font-medium text-foreground">{a.displayName || a.name}</span> — detected and tracking sessions</span>
-                </div>
-              ))}
-              {!agents.some(a => a.name === 'claude-code') && (
-                <div className="flex items-start gap-2">
-                  <span className="text-muted-foreground/50 mt-0.5">&#x25CB;</span>
-                  <span>Claude Code — <code className="text-[11px] bg-muted px-1 rounded">npm i -g @anthropic-ai/claude-code</code></span>
-                </div>
-              )}
-              {!agents.some(a => a.name === 'kiro') && (
-                <div className="flex items-start gap-2">
-                  <span className="text-muted-foreground/50 mt-0.5">&#x25CB;</span>
-                  <span>Kiro — download from kiro.dev</span>
-                </div>
-              )}
-              {!agents.some(a => a.name === 'codex') && (
-                <div className="flex items-start gap-2">
-                  <span className="text-muted-foreground/50 mt-0.5">&#x25CB;</span>
-                  <span>Codex — <code className="text-[11px] bg-muted px-1 rounded">npm i -g @openai/codex</code></span>
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+      {/* Getting started banner — always visible when no data, dismissable when data exists */}
+      {(showGuide || !hasData) && (
+        <GettingStartedBanner agents={agents} rangePreset={rangePreset} onRangeChange={onRangeChange} onDismiss={dismissGuide} hasData={hasData} />
       )}
 
-      {/* Show guide toggle when dismissed */}
-      {!showGuide && (
+      {/* Show guide toggle when dismissed and there is data */}
+      {!showGuide && hasData && (
         <div className="flex justify-end">
           <button onClick={enableGuide} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
             Show getting started guide
@@ -715,27 +607,28 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange }:
       {/* Today summary card — shown when "Today" range is selected */}
       {rangePreset === 'today' && <TodaySummary stats={stats} />}
 
-      {/* Key metric cards */}
+      {/* Key metric cards — clickable for drill-down */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-        <StatCard title="Total Sessions" value={String(stats.totalSessions)} />
-        <StatCard title="Estimated Cost" value={formatCost(stats.totalCost)} />
-        <StatCard title="Tool Success Rate" value={formatPct(toolSuccessRate)} accent={toolSuccessRate < 0.9 ? 'red' : toolSuccessRate < 0.95 ? 'yellow' : 'green'} />
-        <StatCard title="Cost / Completion" value={totalCompleted > 0 ? formatCost(stats.totalCost / totalCompleted) : 'N/A'} />
-        <StatCard title="Wasted Cost" value={stats.wastedCost > 0 ? formatCost(stats.wastedCost) : '$0.00'} accent={stats.wastedCost > 0.5 ? 'red' : stats.wastedCost > 0 ? 'yellow' : undefined} />
-        <StatCard title="Agents Detected" value={String(agents.length)} />
+        <StatCard title="Total Sessions" value={String(stats.totalSessions)} onClick={() => onTabChange('sessions')} />
+        <StatCard title="Estimated Cost" value={formatCost(stats.totalCost)} onClick={() => onTabChange('costs')} />
+        <StatCard title="Tool Success Rate" value={formatPct(toolSuccessRate)} accent={toolSuccessRate < 0.9 ? 'red' : toolSuccessRate < 0.95 ? 'yellow' : 'green'} onClick={() => onTabChange('tools')} />
+        <StatCard title="Cost / Completion" value={totalCompleted > 0 ? formatCost(stats.totalCost / totalCompleted) : 'N/A'} onClick={() => onTabChange('efficiency')} />
+        <StatCard title="Wasted Cost" value={stats.wastedCost > 0 ? formatCost(stats.wastedCost) : '$0.00'} accent={stats.wastedCost > 0.5 ? 'red' : stats.wastedCost > 0 ? 'yellow' : undefined} onClick={() => onTabChange('costs')} />
+        <StatCard title="Agents Detected" value={String(agents.length)} onClick={() => onTabChange('workspace')} />
       </div>
 
       {/* Token cache breakdown */}
       {cacheSavings > 0 && <TokenCacheBar stats={stats} />}
 
-      {/* Per-agent breakdown */}
+      {/* Per-agent breakdown — click to view sessions for that agent */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {stats.agents.map(a => (
-          <Card key={a.agent}>
+          <Card key={a.agent} className="cursor-pointer hover:border-primary/50 transition-colors" onClick={() => { onAgentFilter?.(a.agent); onTabChange('sessions'); }}>
             <CardHeader className="pb-2">
               <div className="flex items-center gap-2">
                 <div className="w-3 h-3 rounded-full" style={{ backgroundColor: AGENT_COLORS[a.agent] }} />
                 <CardTitle className="text-sm font-medium">{AGENT_LABELS[a.agent] ?? a.agent}</CardTitle>
+                <span className="text-[10px] text-muted-foreground ml-auto">View sessions &rarr;</span>
               </div>
             </CardHeader>
             <CardContent className="space-y-1 text-sm">
@@ -759,7 +652,7 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange }:
 
       {/* Charts row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Card>
+        <Card className="cursor-pointer hover:border-primary/50 transition-colors" onClick={() => onTabChange('sessions')}>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium">Sessions by Agent</CardTitle>
           </CardHeader>
@@ -777,7 +670,7 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange }:
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="cursor-pointer hover:border-primary/50 transition-colors" onClick={() => onTabChange('activity')}>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium">Daily Activity (Last 30 Days)</CardTitle>
           </CardHeader>
@@ -1074,11 +967,11 @@ function SessionDetailPanel({ session, onClose }: { session: Session; onClose: (
 
 // ─── Sessions Tab ─────────────────────────────────────────────────────────────
 
-function SessionsTab({ range, loading: initialLoading, initialProject }: { range: { from?: string; to?: string }; loading: boolean; initialProject?: string }) {
+function SessionsTab({ range, loading: initialLoading, initialProject, initialAgent }: { range: { from?: string; to?: string }; loading: boolean; initialProject?: string; initialAgent?: string }) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
-  const [agentFilter, setAgentFilter] = useState<string>('all');
+  const [agentFilter, setAgentFilter] = useState<string>(initialAgent ?? 'all');
   const [completedFilter, setCompletedFilter] = useState<string>('all');
   const [projectFilter, setProjectFilter] = useState<string>(initialProject ?? '');
   const [search, setSearch] = useState('');
@@ -1089,6 +982,7 @@ function SessionsTab({ range, loading: initialLoading, initialProject }: { range
   const pageSize = 50;
 
   useEffect(() => { if (initialProject) setProjectFilter(initialProject); }, [initialProject]);
+  useEffect(() => { if (initialAgent) setAgentFilter(initialAgent); }, [initialAgent]);
 
   const loadSessions = useCallback(async () => {
     setLoading(true);
@@ -2395,13 +2289,13 @@ function TokenCacheBar({ stats }: { stats: CombinedStats }) {
 
 // ─── Shared Components ────────────────────────────────────────────────────────
 
-function StatCard({ title, value, accent }: { title: string; value: string; accent?: 'red' | 'yellow' | 'green' }) {
+function StatCard({ title, value, accent, onClick }: { title: string; value: string; accent?: 'red' | 'yellow' | 'green'; onClick?: () => void }) {
   const colorClass = accent === 'red' ? 'text-red-600 dark:text-red-400'
     : accent === 'yellow' ? 'text-yellow-600 dark:text-yellow-400'
     : accent === 'green' ? 'text-green-600 dark:text-green-400'
     : '';
   return (
-    <Card>
+    <Card className={onClick ? 'cursor-pointer hover:border-primary/50 transition-colors' : ''} onClick={onClick}>
       <CardContent className="pt-4 pb-3">
         <p className="text-xs text-muted-foreground">{title}</p>
         <p className={`text-2xl font-bold ${colorClass}`}>{value}</p>
@@ -2472,10 +2366,14 @@ export const CodingAgentsPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [rangePreset, setRangePreset] = useState<DateRangePreset>('today');
   const [sessionProjectFilter, setSessionProjectFilter] = useState<string | undefined>();
+  const [sessionAgentFilter, setSessionAgentFilter] = useState<string | undefined>();
 
   const handleSelectProject = (projectPath: string) => {
     setSessionProjectFilter(projectPath);
     setActiveTab('sessions');
+  };
+  const handleAgentFilter = (agent: string) => {
+    setSessionAgentFilter(agent);
   };
 
   const range = getDateRange(rangePreset);
@@ -2632,10 +2530,10 @@ export const CodingAgentsPage: React.FC = () => {
           </TabsList>
 
           <TabsContent value="overview" className="mt-4">
-            <OverviewTab stats={stats} agents={agents} onTabChange={setActiveTab} rangePreset={rangePreset} onRangeChange={setRangePreset} />
+            <OverviewTab stats={stats} agents={agents} onTabChange={setActiveTab} rangePreset={rangePreset} onRangeChange={setRangePreset} onAgentFilter={handleAgentFilter} />
           </TabsContent>
           <TabsContent value="sessions" className="mt-4">
-            <SessionsTab range={range} loading={loading} initialProject={sessionProjectFilter} />
+            <SessionsTab range={range} loading={loading} initialProject={sessionProjectFilter} initialAgent={sessionAgentFilter} />
           </TabsContent>
           <TabsContent value="projects" className="mt-4">
             <ProjectsTab projects={projects} loading={activeTab === 'projects' && !projects} onSelectProject={handleSelectProject} />

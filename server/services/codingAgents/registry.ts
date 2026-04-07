@@ -41,6 +41,14 @@ import { ClaudeCodeReader } from './readers/claudeCode';
 import { KiroReader } from './readers/kiro';
 import { CodexReader } from './readers/codex';
 
+/** Format a Date as YYYY-MM-DD in local timezone (NOT UTC). */
+function localDateStr(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 /** Filter sessions by date range */
 function filterByDate(sessions: AgentSession[], range?: DateRange): AgentSession[] {
   if (!range?.from && !range?.to) return sessions;
@@ -299,10 +307,10 @@ class CodingAgentRegistry {
       }
     }
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localDateStr(new Date());
     let current = 0;
-    const dateIter = new Date(today);
-    while (activeDates.has(dateIter.toISOString().slice(0, 10))) {
+    const dateIter = new Date();
+    while (activeDates.has(localDateStr(dateIter))) {
       current++;
       dateIter.setDate(dateIter.getDate() - 1);
     }
