@@ -128,6 +128,15 @@ export const SettingsPage: React.FC = () => {
   const [observabilityTestStatus, setObservabilityTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [observabilityTestMessage, setObservabilityTestMessage] = useState('');
 
+  // Remote servers state
+  const [remoteServers, setRemoteServers] = useState<Array<{ name: string; url: string; hasApiKey: boolean }>>([]);
+  const [isAddingRemote, setIsAddingRemote] = useState(false);
+  const [newRemoteName, setNewRemoteName] = useState('');
+  const [newRemoteUrl, setNewRemoteUrl] = useState('');
+  const [newRemoteApiKey, setNewRemoteApiKey] = useState('');
+  const [remoteTestStatus, setRemoteTestStatus] = useState<Record<string, 'idle' | 'testing' | 'ok' | 'error'>>({});
+  const [remoteTestMessage, setRemoteTestMessage] = useState<Record<string, string>>({});
+
   // Index fix modal state
   const [indexFixState, setIndexFixState] = useState<{
     visible: boolean;
@@ -206,6 +215,62 @@ export const SettingsPage: React.FC = () => {
     }
   }, []);
 
+  // Remote servers CRUD
+  const loadRemoteServers = useCallback(async () => {
+    try {
+      const res = await fetch(`${ENV_CONFIG.backendUrl}/api/remote-servers`);
+      const data = await res.json();
+      setRemoteServers(data.servers || []);
+    } catch { /* ignore */ }
+  }, []);
+
+  const addRemoteServer = async () => {
+    if (!newRemoteName.trim() || !newRemoteUrl.trim()) return;
+    try {
+      const res = await fetch(`${ENV_CONFIG.backendUrl}/api/remote-servers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newRemoteName.trim(), url: newRemoteUrl.trim(), apiKey: newRemoteApiKey.trim() || undefined }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        alert(err.error || 'Failed to add server');
+        return;
+      }
+      setNewRemoteName('');
+      setNewRemoteUrl('');
+      setNewRemoteApiKey('');
+      setIsAddingRemote(false);
+      loadRemoteServers();
+    } catch { alert('Failed to add server'); }
+  };
+
+  const removeRemoteServer = async (name: string) => {
+    try {
+      await fetch(`${ENV_CONFIG.backendUrl}/api/remote-servers/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      loadRemoteServers();
+    } catch { /* ignore */ }
+  };
+
+  const testRemoteServer = async (name: string) => {
+    setRemoteTestStatus(prev => ({ ...prev, [name]: 'testing' }));
+    setRemoteTestMessage(prev => ({ ...prev, [name]: '' }));
+    try {
+      const res = await fetch(`${ENV_CONFIG.backendUrl}/api/remote-servers/${encodeURIComponent(name)}/test`, { method: 'POST' });
+      const data = await res.json();
+      if (data.status === 'ok') {
+        setRemoteTestStatus(prev => ({ ...prev, [name]: 'ok' }));
+        setRemoteTestMessage(prev => ({ ...prev, [name]: `Connected — ${data.agents} agent(s) detected` }));
+      } else {
+        setRemoteTestStatus(prev => ({ ...prev, [name]: 'error' }));
+        setRemoteTestMessage(prev => ({ ...prev, [name]: data.message || 'Connection failed' }));
+      }
+    } catch {
+      setRemoteTestStatus(prev => ({ ...prev, [name]: 'error' }));
+      setRemoteTestMessage(prev => ({ ...prev, [name]: 'Request failed' }));
+    }
+  };
+
   // Scroll to section if URL hash is present (e.g., /settings#storage)
   const location = useLocation();
   const hasScrolled = useRef(false);
@@ -261,6 +326,7 @@ export const SettingsPage: React.FC = () => {
     setCurrentTheme(getTheme());
     loadStorageStats();
     loadConfigStatus();
+    loadRemoteServers();
 
     // Check for localStorage data to migrate
     const hasData = hasLocalStorageData();
@@ -1128,6 +1194,140 @@ export const SettingsPage: React.FC = () => {
             <AlertDescription className="text-xs text-blue-300">
               Custom endpoints will appear in the agent selector during evaluations.
               For authentication, use environment variables in the server configuration.
+            </AlertDescription>
+          </Alert>
+        </CardContent>
+      </Card>
+
+      {/* Remote Servers */}
+      <Card id="remote-servers" className="mb-6">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Server size={18} />
+            Remote Servers
+          </CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Aggregate coding agent data from remote build servers, EC2 instances, or cloud dev environments.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Server list */}
+          {remoteServers.length > 0 && (
+            <div className="space-y-2">
+              {remoteServers.map((server) => (
+                <div
+                  key={server.name}
+                  className="p-3 border rounded-lg bg-muted/5 flex items-start justify-between gap-3"
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-sm flex items-center gap-2">
+                      {server.name}
+                      {server.hasApiKey && (
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-green-100 text-green-800 dark:bg-green-950/50 dark:text-green-300 border border-green-300 dark:border-green-700/50">
+                          auth
+                        </span>
+                      )}
+                      {remoteTestStatus[server.name] === 'ok' && (
+                        <CheckCircle2 size={14} className="text-green-500" />
+                      )}
+                      {remoteTestStatus[server.name] === 'error' && (
+                        <XCircle size={14} className="text-red-500" />
+                      )}
+                    </div>
+                    <div className="text-xs text-muted-foreground truncate flex items-center gap-1 mt-1">
+                      <ExternalLink size={10} />
+                      {server.url}
+                    </div>
+                    {remoteTestMessage[server.name] && (
+                      <div className={`text-xs mt-1 ${remoteTestStatus[server.name] === 'ok' ? 'text-green-500' : 'text-red-500'}`}>
+                        {remoteTestMessage[server.name]}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => testRemoteServer(server.name)}
+                      disabled={remoteTestStatus[server.name] === 'testing'}
+                    >
+                      {remoteTestStatus[server.name] === 'testing' ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : (
+                        <RefreshCw size={14} />
+                      )}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => removeRemoteServer(server.name)}
+                      className="text-red-500 hover:text-red-600 hover:bg-red-100/10"
+                    >
+                      <Trash2 size={14} />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {remoteServers.length === 0 && !isAddingRemote && (
+            <div className="text-sm text-muted-foreground text-center py-4">
+              No remote servers configured.
+            </div>
+          )}
+
+          {/* Add form */}
+          {isAddingRemote ? (
+            <div className="p-4 border rounded-lg bg-muted/20 space-y-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="remote-name" className="text-xs">Name</Label>
+                <Input
+                  id="remote-name"
+                  placeholder="ec2-build-1"
+                  value={newRemoteName}
+                  onChange={(e) => setNewRemoteName(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="remote-url" className="text-xs">Server URL</Label>
+                <Input
+                  id="remote-url"
+                  placeholder="http://10.0.1.50:4001"
+                  value={newRemoteUrl}
+                  onChange={(e) => setNewRemoteUrl(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="remote-api-key" className="text-xs">API Key (optional)</Label>
+                <Input
+                  id="remote-api-key"
+                  type="password"
+                  placeholder="sk-..."
+                  value={newRemoteApiKey}
+                  onChange={(e) => setNewRemoteApiKey(e.target.value)}
+                />
+              </div>
+              <div className="flex gap-2">
+                <Button size="sm" onClick={addRemoteServer} disabled={!newRemoteName.trim() || !newRemoteUrl.trim()}>
+                  <Save size={14} className="mr-1" />
+                  Add Server
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => { setIsAddingRemote(false); setNewRemoteName(''); setNewRemoteUrl(''); setNewRemoteApiKey(''); }}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <Button variant="outline" size="sm" onClick={() => setIsAddingRemote(true)}>
+              <Plus size={14} className="mr-1" />
+              Add Remote Server
+            </Button>
+          )}
+
+          <Alert className="bg-blue-900/10 border-blue-700/20">
+            <AlertDescription className="text-xs text-blue-300">
+              Run <code className="bg-muted px-1 py-0.5 rounded">agent-health serve --headless --api-key sk-secret</code> on each remote machine, then add it here. The dashboard will aggregate data from all servers. Changes take effect after server restart.
             </AlertDescription>
           </Alert>
         </CardContent>
