@@ -194,6 +194,72 @@ const AGENT_COLORS = { ..., 'my-agent': '#your-color' };
 const AGENT_LABELS = { ..., 'my-agent': 'My Agent' };
 ```
 
+## Remote Build Server Monitoring
+
+Monitor coding agents running on remote EC2 instances, build servers, or cloud dev environments from a single local dashboard.
+
+### How It Works
+
+Each remote machine runs `agent-health` in **headless mode** (API only, no frontend). Your local dashboard aggregates data from all remotes transparently — the frontend code is unchanged, always talking to its own local server.
+
+```
+[Remote EC2-A]  agent-health serve --headless --api-key sk-abc  → :4001
+[Remote EC2-B]  agent-health serve --headless --api-key sk-xyz  → :4001
+
+[Local machine]
+  Browser → localhost:4001 → Local server merges local + remote data
+```
+
+### Setup
+
+**On each remote machine:**
+
+```bash
+npx @opensearch-project/agent-health serve --headless --api-key sk-my-secret
+```
+
+**On your local machine:**
+
+```bash
+# Add remote servers
+agent-health remote add --name ec2-build-1 --url http://10.0.1.50:4001 --api-key sk-my-secret
+agent-health remote add --name ec2-build-2 --url http://10.0.1.51:4001 --api-key sk-other
+
+# Test connectivity
+agent-health remote test
+
+# Start the dashboard — automatically aggregates from all servers
+agent-health
+```
+
+Or configure via `agent-health.config.json`:
+
+```json
+{
+  "remoteServers": [
+    { "name": "ec2-build-1", "url": "http://10.0.1.50:4001", "apiKey": "sk-my-secret" },
+    { "name": "ec2-build-2", "url": "http://10.0.1.51:4001", "apiKey": "sk-other" }
+  ]
+}
+```
+
+### CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `agent-health remote add --name <n> --url <u> [--api-key <k>]` | Add a remote server |
+| `agent-health remote remove <name>` | Remove a remote server |
+| `agent-health remote list` | List configured remotes |
+| `agent-health remote test` | Test connectivity to all remotes |
+
+### Key Behaviors
+
+- **Graceful degradation**: If a remote is unreachable, the dashboard still shows data from available sources
+- **30-second cache**: Remote session data is cached locally to avoid excessive network calls
+- **10-second timeout**: Slow remotes don't block the entire dashboard
+- **Server badges**: Sessions from remote servers show a colored badge with the server name
+- **Transparent aggregation**: All analytics (stats, costs, activity, tools, etc.) automatically include remote data
+
 ## Privacy
 
 All data stays local. The dashboard reads session files directly from your filesystem (`~/.claude/`, `~/.kiro/`, `~/.codex/`). No data is sent to any external service. The `_filePath` internal field used for caching is stripped from all API responses.

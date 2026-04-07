@@ -6,14 +6,21 @@
 
 ## What is Agent Health?
 
-Agent Health is an evaluation and observability framework for AI agents. It helps you measure agent performance through "Golden Path" trajectory comparison—where an LLM judge evaluates agent actions against expected outcomes.
+Agent Health is an evaluation, observability, and analytics framework for AI agents. It provides two core capabilities:
+
+1. **Coding Agent Analytics** — A unified dashboard for monitoring Claude Code, Kiro, and Codex CLI usage. Track costs, tool usage, activity patterns, and efficiency across all your coding agents — locally or across remote build servers.
+
+2. **Agent Evaluation** — Measure agent performance through "Golden Path" trajectory comparison, where an LLM judge evaluates agent actions against expected outcomes.
 
 **Who uses Agent Health:**
+- Developers using AI coding agents who want visibility into usage, costs, and productivity
 - AI teams building autonomous agents (RCA, customer support, data analysis)
+- Engineering managers monitoring coding agent adoption across remote build environments
 - QA engineers testing agent behavior across scenarios
-- Platform teams monitoring agent performance in production
 
 **Key capabilities:**
+- Unified coding agent dashboard with cost estimation, tool analytics, and activity patterns
+- Multi-server monitoring — aggregate data from remote EC2/build servers into one view
 - Real-time agent execution streaming and visualization
 - LLM-based evaluation with pass/fail scoring
 - Batch experiments comparing agents and models
@@ -34,6 +41,33 @@ Opens http://localhost:4001 with pre-loaded sample data for exploration.
 - [Connect Your Agent](./docs/CONFIGURATION.md) - Configure your own agent
 
 ## Features
+
+### Coding Agent Analytics
+
+A unified dashboard for monitoring AI coding agent usage across **Claude Code**, **Kiro**, and **Codex CLI**. Zero configuration — just run `agent-health` and it auto-detects installed agents.
+
+- **Multi-agent dashboard**: Session history, cost estimation, tool usage, activity patterns, and efficiency metrics across all three agents
+- **9 analytics tabs**: Overview, Sessions, Projects, Costs, Activity, Efficiency, Tools, Advanced, and Workspace management
+- **Interactive drill-downs**: Click any chart, card, or metric to drill into filtered session views
+- **Remote server monitoring**: Run headless on EC2/build servers, connect a local dashboard to aggregate data from multiple machines
+- **Workspace management**: View and edit Claude Code memory files, plans, tasks; browse Kiro MCP servers, agents, and extensions
+- **Privacy-first**: All data stays local — reads directly from `~/.claude/`, `~/.kiro/`, `~/.codex/`
+
+[Full documentation](./docs/CODING_AGENT_ANALYTICS.md)
+
+#### Monitor Remote Build Servers
+
+```bash
+# On each remote machine (EC2, build server, cloud dev env)
+npx @opensearch-project/agent-health serve --headless --api-key sk-secret
+
+# On your local machine
+agent-health remote add --name ec2-build --url http://10.0.1.50:4001 --api-key sk-secret
+agent-health remote test   # verify connectivity
+agent-health               # dashboard aggregates all servers automatically
+```
+
+### Agent Evaluation & Observability
 
 - **Evals**: Real-time agent evaluation with trajectory streaming
 - **Experiments**: Batch evaluation runs with configurable parameters
@@ -375,6 +409,9 @@ All commits require DCO signoff and all PRs must pass CI checks (tests, coverage
 - [Getting Started](./GETTING_STARTED.md) - Step-by-step walkthrough from install to first evaluation
 - [Configuration](./docs/CONFIGURATION.md) - Connect your agent and configure the environment
 - [CLI Reference](./docs/CLI.md) - Command-line interface documentation
+
+### Feature Guides
+- [Coding Agent Analytics](./docs/CODING_AGENT_ANALYTICS.md) - Multi-agent dashboard, remote server monitoring, workspace management
 
 ### Developer Guides
 - [Development Guide](./CLAUDE.md) - Architecture, coding conventions, and contributing
