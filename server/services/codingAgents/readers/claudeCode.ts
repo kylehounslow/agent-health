@@ -306,6 +306,13 @@ export class ClaudeCodeReader implements CodingAgentReader {
     };
   }
 
+  async rereadSession(filePath: string): Promise<AgentSession | null> {
+    const sessionId = path.basename(filePath, '.jsonl');
+    const slug = path.basename(path.dirname(filePath));
+    const projectPath = await resolveProjectPath(slug);
+    return deriveSessionMeta(filePath, sessionId, projectPath);
+  }
+
   async getSessionDetail(sessionId: string): Promise<SessionDetail | null> {
     const slugs = await listProjectSlugs();
     for (const slug of slugs) {

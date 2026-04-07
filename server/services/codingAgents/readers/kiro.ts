@@ -460,6 +460,22 @@ export class KiroReader implements CodingAgentReader {
     };
   }
 
+  async rereadSession(filePath: string): Promise<AgentSession | null> {
+    if (filePath.endsWith('.jsonl')) {
+      return deriveCliSession(filePath);
+    }
+    // IDE session — need the index entry
+    const wsDir = path.dirname(filePath);
+    try {
+      const indexRaw = await fs.readFile(path.join(wsDir, 'sessions.json'), 'utf-8');
+      const indices: IdeSessionIndex[] = JSON.parse(indexRaw);
+      const sessionId = path.basename(filePath, '.json');
+      const idx = indices.find(i => i.sessionId === sessionId);
+      if (idx) return deriveIdeSession(wsDir, idx);
+    } catch { /* skip */ }
+    return null;
+  }
+
   async getSessionDetail(sessionId: string): Promise<SessionDetail | null> {
     // Try CLI first
     const cliPath = kiroPath('sessions', 'cli', `${sessionId}.jsonl`);

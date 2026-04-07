@@ -39,6 +39,7 @@ function createMockReader(agentName: string = 'claude-code'): any {
     getSessions: jest.fn().mockResolvedValue([]),
     getStats: jest.fn().mockResolvedValue({}),
     getSessionDetail: jest.fn().mockResolvedValue(null),
+    rereadSession: jest.fn().mockResolvedValue(null),
   };
 }
 
@@ -148,7 +149,7 @@ describe('ReaderCache', () => {
       expect(result).toHaveLength(1);
     });
 
-    it('should re-read when directory signature changes', async () => {
+    it('should re-read when directory signature changes (after TTL expires)', async () => {
       setupDirSignatureMocks(1000, 1);
 
       const reader = createMockReader();
@@ -164,12 +165,16 @@ describe('ReaderCache', () => {
       const result1 = await cache.getSessions();
       expect(result1).toHaveLength(1);
 
-      // Change the directory signature
+      // Change the directory signature and advance past the signature TTL (5s)
       setupDirSignatureMocks(9999, 3);
+      const realDateNow = Date.now;
+      jest.spyOn(Date, 'now').mockReturnValue(realDateNow() + 6000);
 
       const result2 = await cache.getSessions();
       expect(reader.getSessions).toHaveBeenCalledTimes(2);
       expect(result2).toHaveLength(2);
+
+      jest.spyOn(Date, 'now').mockRestore();
     });
 
     it('should fall back to reader.getSessions() for unknown agent types', async () => {
@@ -270,9 +275,9 @@ describe('ReaderCache', () => {
         return { mtimeMs: 1000, isDirectory: () => false, isFile: () => true } as any;
       });
 
-      reader.getSessions.mockResolvedValue([
+      reader.rereadSession.mockResolvedValue(
         createMockSession({ session_id: 'active-1', session_completed: false, _filePath: filePath, user_message_count: 10 }),
-      ]);
+      );
 
       const changed = await cache.refreshActiveSessions();
       expect(changed).toBe(true);

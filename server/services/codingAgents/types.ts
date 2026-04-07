@@ -301,4 +301,6 @@ export interface CodingAgentReader {
   getSessions(): Promise<AgentSession[]>;
   getStats(): Promise<AgentStats>;
   getSessionDetail?(sessionId: string): Promise<SessionDetail | null>;
+  /** Re-read a single session from its file path. Used by cache for incremental refresh. */
+  rereadSession?(filePath: string): Promise<AgentSession | null>;
 }

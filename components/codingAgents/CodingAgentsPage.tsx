@@ -302,6 +302,42 @@ function formatPct(n: number): string {
   return `${(n * 100).toFixed(0)}%`;
 }
 
+/** Pluralize helper: pluralize(1, 'day') → '1 day', pluralize(3, 'day') → '3 days' */
+function pluralize(n: number, singular: string, plural?: string): string {
+  return `${n} ${n === 1 ? singular : (plural || singular + 's')}`;
+}
+
+/** Relative time helper: "2 hours ago", "3 days ago", or full date */
+function relativeTime(dateStr: string): string {
+  const diffMs = Date.now() - new Date(dateStr).getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  if (diffMins < 1) return 'just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return new Date(dateStr).toLocaleDateString();
+}
+
+/** User-friendly category label mapping */
+const CATEGORY_LABELS: Record<string, string> = {
+  'file-io': 'File I/O',
+  'shell': 'Shell',
+  'agent': 'Agent',
+  'web': 'Web',
+  'planning': 'Planning',
+  'todo': 'Tasks',
+  'skill': 'Skills',
+  'mcp': 'MCP',
+  'cli': 'CLI',
+  'other': 'Other',
+};
+
+function friendlyCategory(cat: string): string {
+  return CATEGORY_LABELS[cat] ?? cat.charAt(0).toUpperCase() + cat.slice(1);
+}
+
 type DateRangePreset = 'today' | '7d' | '30d' | 'all';
 
 // ─── Sortable Table Utilities ────────────────────────────────────────────────
@@ -608,14 +644,24 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange, o
       {/* Today summary card — shown when "Today" range is selected */}
       {rangePreset === 'today' && <TodaySummary stats={stats} />}
 
-      {/* Key metric cards — clickable for drill-down */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-        <StatCard title="Total Sessions" value={String(stats.totalSessions)} onClick={() => onTabChange('sessions')} />
-        <StatCard title="Estimated Cost" value={formatCost(stats.totalCost)} onClick={() => onTabChange('costs')} />
-        <StatCard title="Tool Success Rate" value={formatPct(toolSuccessRate)} accent={toolSuccessRate < 0.9 ? 'red' : toolSuccessRate < 0.95 ? 'yellow' : 'green'} onClick={() => onTabChange('tools')} />
-        <StatCard title="Cost / Completion" value={totalCompleted > 0 ? formatCost(stats.totalCost / totalCompleted) : 'N/A'} onClick={() => onTabChange('efficiency')} />
-        <StatCard title="Wasted Cost" value={stats.wastedCost > 0 ? formatCost(stats.wastedCost) : '$0.00'} accent={stats.wastedCost > 0.5 ? 'red' : stats.wastedCost > 0 ? 'yellow' : undefined} onClick={() => onTabChange('costs')} />
-        <StatCard title="Agents Detected" value={String(agents.length)} onClick={() => onTabChange('workspace')} />
+      {/* Key metric cards — grouped by Usage and Cost */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div>
+          <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Usage</h3>
+          <div className="grid grid-cols-3 gap-3">
+            <StatCard title="Total Sessions" value={String(stats.totalSessions)} onClick={() => onTabChange('sessions')} />
+            <StatCard title="Agents Detected" value={String(agents.length)} onClick={() => onTabChange('workspace')} />
+            <StatCard title="Tool Success" value={formatPct(toolSuccessRate)} accent={toolSuccessRate < 0.9 ? 'red' : toolSuccessRate < 0.95 ? 'yellow' : 'green'} onClick={() => onTabChange('tools')} tooltip="Percentage of tool calls that completed without errors" />
+          </div>
+        </div>
+        <div>
+          <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Cost</h3>
+          <div className="grid grid-cols-3 gap-3">
+            <StatCard title="Estimated Cost" value={formatCost(stats.totalCost)} onClick={() => onTabChange('costs')} />
+            <StatCard title="Wasted Cost" value={stats.wastedCost > 0 ? formatCost(stats.wastedCost) : '$0.00'} accent={stats.wastedCost > 0.5 ? 'red' : stats.wastedCost > 0 ? 'yellow' : undefined} onClick={() => onTabChange('costs')} />
+            <StatCard title="Cost / Completion" value={totalCompleted > 0 ? formatCost(stats.totalCost / totalCompleted) : 'N/A'} onClick={() => onTabChange('costs')} />
+          </div>
+        </div>
       </div>
 
       {/* Token cache breakdown */}
@@ -658,20 +704,30 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange, o
             <CardTitle className="text-sm font-medium">Sessions by Agent</CardTitle>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={200}>
-              <PieChart>
-                <Pie data={agentPieData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={40} outerRadius={80} paddingAngle={2} label={({ name, value }) => `${name}: ${value}`}>
-                  {agentPieData.map((entry, i) => (
-                    <Cell key={i} fill={entry.fill} />
-                  ))}
-                </Pie>
-                <Tooltip {...TOOLTIP_STYLE} />
-              </PieChart>
-            </ResponsiveContainer>
+            {agentPieData.length <= 1 ? (
+              <div className="flex items-center justify-center h-[200px]">
+                <div className="text-center">
+                  <div className="w-4 h-4 rounded-full mx-auto mb-2" style={{ backgroundColor: agentPieData[0]?.fill ?? '#6b7280' }} />
+                  <p className="text-lg font-bold">{agentPieData[0]?.name ?? 'No agents'}</p>
+                  <p className="text-2xl font-bold">{agentPieData[0]?.value ?? 0} sessions</p>
+                </div>
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={200}>
+                <PieChart>
+                  <Pie data={agentPieData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={40} outerRadius={80} paddingAngle={2} label={({ name, value }) => `${name}: ${value}`}>
+                    {agentPieData.map((entry, i) => (
+                      <Cell key={i} fill={entry.fill} />
+                    ))}
+                  </Pie>
+                  <Tooltip {...TOOLTIP_STYLE} />
+                </PieChart>
+              </ResponsiveContainer>
+            )}
           </CardContent>
         </Card>
 
-        <Card className="cursor-pointer hover:border-primary/50 transition-colors" onClick={() => onTabChange('activity')}>
+        <Card className="cursor-pointer hover:border-primary/50 transition-colors" onClick={() => onTabChange('performance')}>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium">Daily Activity (Last 30 Days)</CardTitle>
           </CardHeader>
@@ -980,6 +1036,7 @@ function SessionsTab({ range, loading: initialLoading, initialProject, initialAg
   const [searchInput, setSearchInput] = useState('');
   const [loading, setLoading] = useState(initialLoading);
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
+  const [expandedPrompts, setExpandedPrompts] = useState<Set<string>>(new Set());
   const { sort: sessSort, toggle: toggleSessSort } = useSort<string>('start_time');
   const pageSize = 50;
 
@@ -1069,9 +1126,9 @@ function SessionsTab({ range, loading: initialLoading, initialProject, initialAg
               <TableHeader>
                 <TableRow>
                   <SortableHead label="Agent" sortKey="agent" sort={sessSort} onSort={toggleSessSort} />
-                  <TableHead>First Prompt</TableHead>
+                  <TableHead className="min-w-[300px]">First Prompt</TableHead>
                   <SortableHead label="Project" sortKey="project_path" sort={sessSort} onSort={toggleSessSort} />
-                  <SortableHead label="Duration" sortKey="duration_minutes" sort={sessSort} onSort={toggleSessSort} className="text-right" />
+                  <SortableHead label="Wall Time" sortKey="duration_minutes" sort={sessSort} onSort={toggleSessSort} className="text-right" />
                   <SortableHead label="Messages" sortKey="messages" sort={sessSort} onSort={toggleSessSort} className="text-right" />
                   <SortableHead label="Tokens" sortKey="tokens" sort={sessSort} onSort={toggleSessSort} className="text-right" />
                   <SortableHead label="Cost" sortKey="estimated_cost" sort={sessSort} onSort={toggleSessSort} className="text-right" />
@@ -1097,8 +1154,16 @@ function SessionsTab({ range, loading: initialLoading, initialProject, initialAg
                         )}
                       </div>
                     </TableCell>
-                    <TableCell className="max-w-xs truncate text-sm" title={s.first_prompt}>
-                      {s.first_prompt || <span className="text-muted-foreground italic">No prompt</span>}
+                    <TableCell className="max-w-xs text-sm">
+                      {s.first_prompt ? (
+                        <div
+                          className={`cursor-pointer ${expandedPrompts.has(s.session_id) ? '' : 'line-clamp-2'}`}
+                          onClick={(e) => { e.stopPropagation(); setExpandedPrompts(prev => { const next = new Set(prev); if (next.has(s.session_id)) next.delete(s.session_id); else next.add(s.session_id); return next; }); }}
+                          title={expandedPrompts.has(s.session_id) ? 'Click to collapse' : s.first_prompt}
+                        >
+                          {s.first_prompt}
+                        </div>
+                      ) : <span className="text-muted-foreground italic">No prompt</span>}
                     </TableCell>
                     <TableCell className="max-w-[120px] truncate text-sm" title={s.project_path}>
                       {s.project_path.split('/').pop()}
@@ -1112,10 +1177,14 @@ function SessionsTab({ range, loading: initialLoading, initialProject, initialAg
                       {s.estimated_cost > 0 ? formatCost(s.estimated_cost) : '-'}
                     </TableCell>
                     <TableCell className="text-sm">
-                      {s.session_completed ? <span className="text-green-600 text-xs">Done</span> : <span className="text-amber-600 text-xs">Abandoned</span>}
+                      {s.session_completed
+                        ? <Badge className="bg-green-500/15 text-green-600 dark:text-green-400 border-green-500/20 text-xs">Completed</Badge>
+                        : <Badge className="bg-red-500/15 text-red-600 dark:text-red-400 border-red-500/20 text-xs">Abandoned</Badge>}
                     </TableCell>
-                    <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
-                      {new Date(s.start_time).toLocaleDateString()}
+                    <TableCell className="text-sm whitespace-nowrap">
+                      <span className="text-foreground">{relativeTime(s.start_time)}</span>
+                      <br />
+                      <span className="text-xs text-muted-foreground">{new Date(s.start_time).toLocaleDateString()}</span>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -1198,21 +1267,31 @@ function CostTrendChart({ dailyCosts }: { dailyCosts: DailyCost[] }) {
   );
 }
 
-function CostsTab({ costs, loading, onTabChange, onSelectProject }: { costs: CostAnalytics | null; loading: boolean; onTabChange: (tab: string) => void; onSelectProject: (projectPath: string) => void }) {
+function CostsTab({ costs, loading, onTabChange, onSelectProject, cacheSavings }: { costs: CostAnalytics | null; loading: boolean; onTabChange: (tab: string) => void; onSelectProject: (projectPath: string) => void; cacheSavings?: number }) {
   if (loading || !costs) return <TabSkeleton label="Loading cost analytics..." cards={2} charts={2} />;
 
   const modelData = costs.models.filter(m => m.estimated_cost > 0);
   const projectData = costs.by_project.slice(0, 10);
+  // Use the same cache savings as Overview (computed from agent stats) for consistency
+  const displaySavings = cacheSavings ?? costs.total_savings;
+
+  // Cost forecast: (total / days with data) * 30
+  const uniqueDays = new Set(costs.daily_costs.map(d => d.date)).size;
+  const monthlyProjection = uniqueDays >= 2 ? (costs.total_cost / uniqueDays) * 30 : null;
 
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-4">
         <StatCard title="Total Estimated Cost" value={formatCost(costs.total_cost)} onClick={() => onTabChange('sessions')} />
-        <StatCard title="Cache Savings" value={formatCost(costs.total_savings)} onClick={() => onTabChange('efficiency')} />
+        <StatCard title="Cache Savings" value={formatCost(displaySavings)} accent={displaySavings > 0 ? 'green' : undefined} onClick={() => onTabChange('overview')} />
       </div>
 
+      {monthlyProjection !== null && (
+        <p className="text-xs text-muted-foreground">At current rate: ~{formatCost(monthlyProjection)}/month projected ({uniqueDays} days of data)</p>
+      )}
+
       {/* Cost trend chart — click to see activity */}
-      <div className="cursor-pointer" onClick={() => onTabChange('activity')}>
+      <div className="cursor-pointer" onClick={() => onTabChange('performance')}>
         <CostTrendChart dailyCosts={costs.daily_costs} />
       </div>
 
@@ -1222,19 +1301,29 @@ function CostsTab({ costs, loading, onTabChange, onSelectProject }: { costs: Cos
             <CardTitle className="text-sm font-medium">Cost by Model</CardTitle>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={250}>
-              <BarChart data={modelData} layout="vertical" margin={{ top: 5, right: 30, left: 20, bottom: 5 }} className="cursor-pointer">
-                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" horizontal={false} />
-                <XAxis type="number" {...AXIS_PROPS} tickFormatter={(v: number) => formatCost(v)} />
-                <YAxis type="category" dataKey="model" width={150} {...AXIS_PROPS} />
-                <Tooltip {...TOOLTIP_STYLE} formatter={(v: number) => [formatCost(v), 'Cost']} />
-                <Bar dataKey="estimated_cost" name="Cost" radius={[0, 4, 4, 0]} onClick={(_data, idx) => { const agent = modelData[idx]?.agent; if (agent) onTabChange('sessions'); }}>
-                  {modelData.map((m, i) => (
-                    <Cell key={i} fill={AGENT_COLORS[m.agent] ?? '#6b7280'} className="cursor-pointer" />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+            {modelData.length <= 1 ? (
+              <div className="flex items-center justify-center h-[250px]">
+                <div className="text-center">
+                  <p className="text-sm text-muted-foreground">All costs from</p>
+                  <p className="text-lg font-bold font-mono">{modelData[0]?.model ?? 'unknown'}</p>
+                  <p className="text-2xl font-bold mt-1">{formatCost(modelData[0]?.estimated_cost ?? 0)}</p>
+                </div>
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={250}>
+                <BarChart data={modelData} layout="vertical" margin={{ top: 5, right: 30, left: 20, bottom: 5 }} className="cursor-pointer">
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" horizontal={false} />
+                  <XAxis type="number" {...AXIS_PROPS} tickFormatter={(v: number) => formatCost(v)} domain={[0, (dataMax: number) => dataMax === 0 ? 10 : Math.ceil(dataMax * 1.2)]} />
+                  <YAxis type="category" dataKey="model" width={150} {...AXIS_PROPS} />
+                  <Tooltip {...TOOLTIP_STYLE} formatter={(v: number) => [formatCost(v), 'Cost']} />
+                  <Bar dataKey="estimated_cost" name="Cost" radius={[0, 4, 4, 0]} onClick={(_data, idx) => { const agent = modelData[idx]?.agent; if (agent) onTabChange('sessions'); }}>
+                    {modelData.map((m, i) => (
+                      <Cell key={i} fill={AGENT_COLORS[m.agent] ?? '#6b7280'} className="cursor-pointer" />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
           </CardContent>
         </Card>
 
@@ -1246,7 +1335,7 @@ function CostsTab({ costs, loading, onTabChange, onSelectProject }: { costs: Cos
             <ResponsiveContainer width="100%" height={250}>
               <BarChart data={projectData} layout="vertical" margin={{ top: 5, right: 30, left: 20, bottom: 5 }} className="cursor-pointer">
                 <CartesianGrid strokeDasharray="3 3" className="stroke-muted" horizontal={false} />
-                <XAxis type="number" {...AXIS_PROPS} tickFormatter={(v: number) => formatCost(v)} />
+                <XAxis type="number" {...AXIS_PROPS} tickFormatter={(v: number) => formatCost(v)} domain={[0, (dataMax: number) => dataMax === 0 ? 10 : Math.ceil(dataMax * 1.2)]} />
                 <YAxis type="category" dataKey="display_name" width={120} {...AXIS_PROPS} />
                 <Tooltip {...TOOLTIP_STYLE} formatter={(v: number) => [formatCost(v), 'Cost']} />
                 <Bar dataKey="estimated_cost" name="Cost" radius={[0, 4, 4, 0]} onClick={(_data, idx) => { const p = projectData[idx]; if (p) onSelectProject(p.project_path); }}>
@@ -1271,45 +1360,93 @@ function ActivityTab({ activity, loading, onTabChange }: { activity: ActivityDat
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-3 gap-4">
-        <StatCard title="Current Streak" value={`${activity.streaks.current} days`} onClick={() => onTabChange('sessions')} />
-        <StatCard title="Longest Streak" value={`${activity.streaks.longest} days`} onClick={() => onTabChange('sessions')} />
+        <StatCard title="Current Streak" value={pluralize(activity.streaks.current, 'day')} onClick={() => onTabChange('sessions')} />
+        <StatCard title="Longest Streak" value={pluralize(activity.streaks.longest, 'day')} onClick={() => onTabChange('sessions')} />
         <StatCard title="Active Days" value={String(activity.total_active_days)} onClick={() => onTabChange('sessions')} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Card className="cursor-pointer hover:border-primary/50 transition-colors" onClick={() => onTabChange('advanced')}>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Sessions by Hour</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={activity.hour_counts} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />
-                <XAxis dataKey="hour" {...AXIS_PROPS} />
-                <YAxis {...AXIS_PROPS} />
-                <Tooltip {...TOOLTIP_STYLE} />
-                <Bar dataKey="count" fill="#8b5cf6" name="Sessions" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
+        {(() => {
+          const totalHourSessions = activity.hour_counts.reduce((s, h) => s + h.count, 0);
+          const peakHour = activity.hour_counts.reduce((a, b) => b.count > a.count ? b : a, activity.hour_counts[0]);
+          if (totalHourSessions < 10) {
+            return (
+              <Card>
+                <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Sessions by Hour</CardTitle></CardHeader>
+                <CardContent className="flex items-center justify-center h-[200px]">
+                  <div className="text-center">
+                    {peakHour && peakHour.count > 0 ? (
+                      <>
+                        <p className="text-sm text-muted-foreground">Most active hour</p>
+                        <p className="text-2xl font-bold">{peakHour.hour}:00–{peakHour.hour + 1}:00</p>
+                        <p className="text-sm text-muted-foreground">{peakHour.count} sessions</p>
+                      </>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">Hourly patterns appear after more sessions</p>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          }
+          return (
+            <Card className="cursor-pointer hover:border-primary/50 transition-colors" onClick={() => onTabChange('tools')}>
+              <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Sessions by Hour</CardTitle></CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={200}>
+                  <BarChart data={activity.hour_counts} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />
+                    <XAxis dataKey="hour" {...AXIS_PROPS} />
+                    <YAxis {...AXIS_PROPS} domain={[0, (dataMax: number) => dataMax === 0 ? 5 : Math.ceil(dataMax * 1.2)]} />
+                    <Tooltip {...TOOLTIP_STYLE} />
+                    <Bar dataKey="count" fill="#8b5cf6" name="Sessions" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          );
+        })()}
 
-        <Card className="cursor-pointer hover:border-primary/50 transition-colors" onClick={() => onTabChange('sessions')}>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Sessions by Day of Week</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={activity.dow_counts} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />
-                <XAxis dataKey="day" {...AXIS_PROPS} />
-                <YAxis {...AXIS_PROPS} />
-                <Tooltip {...TOOLTIP_STYLE} />
-                <Bar dataKey="count" fill="#f97316" name="Sessions" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
+        {(() => {
+          const totalDowSessions = activity.dow_counts.reduce((s, d) => s + d.count, 0);
+          const peakDay = activity.dow_counts.reduce((a, b) => b.count > a.count ? b : a, activity.dow_counts[0]);
+          if (totalDowSessions < 10) {
+            return (
+              <Card>
+                <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Sessions by Day of Week</CardTitle></CardHeader>
+                <CardContent className="flex items-center justify-center h-[200px]">
+                  <div className="text-center">
+                    {peakDay && peakDay.count > 0 ? (
+                      <>
+                        <p className="text-sm text-muted-foreground">Most active day</p>
+                        <p className="text-2xl font-bold">{peakDay.day}</p>
+                        <p className="text-sm text-muted-foreground">{peakDay.count} sessions</p>
+                      </>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">Daily patterns appear after more sessions</p>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          }
+          return (
+            <Card className="cursor-pointer hover:border-primary/50 transition-colors" onClick={() => onTabChange('sessions')}>
+              <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Sessions by Day of Week</CardTitle></CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={200}>
+                  <BarChart data={activity.dow_counts} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />
+                    <XAxis dataKey="day" {...AXIS_PROPS} />
+                    <YAxis {...AXIS_PROPS} domain={[0, (dataMax: number) => dataMax === 0 ? 5 : Math.ceil(dataMax * 1.2)]} />
+                    <Tooltip {...TOOLTIP_STYLE} />
+                    <Bar dataKey="count" fill="#f97316" name="Sessions" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          );
+        })()}
       </div>
 
       <Card>
@@ -1374,12 +1511,14 @@ function EfficiencyTab({ efficiency, loading, onTabChange, onAgentFilter }: { ef
           value={formatPct(efficiency.combined.toolSuccessRate)}
           accent={efficiency.combined.toolSuccessRate < 0.9 ? 'red' : efficiency.combined.toolSuccessRate < 0.95 ? 'yellow' : 'green'}
           onClick={() => onTabChange('tools')}
+          tooltip="Percentage of tool calls that completed without errors. Includes all tool types (Bash, Read, Edit, etc.)"
         />
         <StatCard
           title="Overall Completion Rate"
           value={formatPct(efficiency.combined.completionRate)}
           accent={efficiency.combined.completionRate < 0.6 ? 'red' : efficiency.combined.completionRate < 0.8 ? 'yellow' : 'green'}
           onClick={() => onTabChange('sessions')}
+          tooltip="Percentage of sessions that completed successfully vs. abandoned"
         />
         <StatCard
           title="Avg Cost / Completion"
@@ -1403,32 +1542,49 @@ function EfficiencyTab({ efficiency, loading, onTabChange, onAgentFilter }: { ef
               <MetricRow label="Tool Success" value={formatPct(a.toolSuccessRate)} accent={a.toolSuccessRate < 0.9 ? 'red' : a.toolSuccessRate < 0.95 ? 'yellow' : 'green'} />
               <MetricRow label="Completion Rate" value={formatPct(a.completionRate)} accent={a.completionRate < 0.6 ? 'red' : a.completionRate < 0.8 ? 'yellow' : 'green'} />
               <MetricRow label="Cost / Completion" value={a.costPerCompletion > 0 ? formatCost(a.costPerCompletion) : 'N/A'} />
-              <MetricRow label="Tool Errors" value={String(a.totalToolErrors)} accent={a.totalToolErrors > 0 ? 'yellow' : undefined} />
-              <MetricRow label="Sessions" value={`${a.completedSessions} / ${a.totalSessions}`} />
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Tool Errors</span>
+                <span className={`cursor-pointer hover:underline ${a.totalToolErrors > 0 ? 'text-yellow-600 dark:text-yellow-400' : ''}`} onClick={(e) => { e.stopPropagation(); onTabChange('tools'); }}>{a.totalToolErrors}</span>
+              </div>
+              <MetricRow label="Sessions" value={`${a.completedSessions} of ${a.totalSessions}`} />
             </CardContent>
           </Card>
         ))}
       </div>
 
-      {/* Comparison chart */}
-      <Card className="cursor-pointer hover:border-primary/50 transition-colors" onClick={() => onTabChange('tools')}>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium">Agent Comparison (%)</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={chartData} margin={{ top: 5, right: 10, left: 10, bottom: 5 }} barGap={4} barCategoryGap="20%">
-              <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />
-              <XAxis dataKey="agent" {...AXIS_PROPS} />
-              <YAxis domain={[0, 100]} {...AXIS_PROPS} tickFormatter={(v: number) => `${v}%`} />
-              <Tooltip {...TOOLTIP_STYLE} formatter={(v: number) => [`${v}%`]} />
-              <Legend wrapperStyle={{ paddingTop: '10px' }} formatter={(value) => <span className="text-sm text-muted-foreground">{value}</span>} />
-              <Bar dataKey="Tool Success" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="Completion" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </CardContent>
-      </Card>
+      {/* Comparison chart — only show when 2+ agents */}
+      {chartData.length > 1 ? (
+        <Card className="cursor-pointer hover:border-primary/50 transition-colors" onClick={() => onTabChange('tools')}>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">Agent Comparison (%)</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={chartData} margin={{ top: 5, right: 10, left: 10, bottom: 5 }} barGap={4} barCategoryGap="20%">
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />
+                <XAxis dataKey="agent" {...AXIS_PROPS} />
+                <YAxis domain={[0, 100]} {...AXIS_PROPS} tickFormatter={(v: number) => `${v}%`} />
+                <Tooltip {...TOOLTIP_STYLE} formatter={(v: number) => [`${v}%`]} />
+                <Legend wrapperStyle={{ paddingTop: '10px' }} formatter={(value) => <span className="text-sm text-muted-foreground">{value}</span>} />
+                <Bar dataKey="Tool Success" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="Completion" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+      ) : chartData.length === 1 && (
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Agent Performance</CardTitle></CardHeader>
+          <CardContent>
+            <div className="flex items-center gap-6">
+              <div className="w-3 h-3 rounded-full" style={{ backgroundColor: chartData[0].fill }} />
+              <span className="text-sm font-medium">{chartData[0].agent}</span>
+              <span className="text-sm">Tool Success: <strong>{chartData[0]['Tool Success']}%</strong></span>
+              <span className="text-sm">Completion: <strong>{chartData[0]['Completion']}%</strong></span>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
@@ -1476,7 +1632,7 @@ function ToolsTab({ tools, loading, onTabChange, onAgentFilter }: { tools: Tools
     byCategory.set(t.category, (byCategory.get(t.category) ?? 0) + t.total_calls);
   }
   const categoryData = Array.from(byCategory.entries())
-    .map(([category, count]) => ({ category, count, fill: CATEGORY_COLORS[category] ?? '#6b7280' }))
+    .map(([category, count]) => ({ category, displayName: friendlyCategory(category), count, fill: CATEGORY_COLORS[category] ?? '#6b7280' }))
     .sort((a, b) => b.count - a.count);
 
   const filteredTools = categoryFilter
@@ -1487,8 +1643,8 @@ function ToolsTab({ tools, loading, onTabChange, onAgentFilter }: { tools: Tools
     <div className="space-y-6">
       <div className="grid grid-cols-3 gap-4">
         <StatCard title="Total Tool Calls" value={formatTokens(tools.total_tool_calls)} />
-        <StatCard title="Total Tool Errors" value={String(tools.total_tool_errors)} accent={tools.total_tool_errors > 0 ? 'yellow' : undefined} onClick={() => onTabChange('advanced')} />
-        <StatCard title="Overall Success Rate" value={tools.total_tool_calls > 0 ? formatPct((tools.total_tool_calls - tools.total_tool_errors) / tools.total_tool_calls) : '100%'} accent={tools.total_tool_calls > 0 && (tools.total_tool_calls - tools.total_tool_errors) / tools.total_tool_calls < 0.9 ? 'red' : 'green'} onClick={() => onTabChange('efficiency')} />
+        <StatCard title="Total Tool Errors" value={String(tools.total_tool_errors)} accent={tools.total_tool_errors > 0 ? 'yellow' : undefined} onClick={() => onTabChange('tools')} />
+        <StatCard title="Overall Success Rate" value={tools.total_tool_calls > 0 ? formatPct((tools.total_tool_calls - tools.total_tool_errors) / tools.total_tool_calls) : '100%'} accent={tools.total_tool_calls > 0 && (tools.total_tool_calls - tools.total_tool_errors) / tools.total_tool_calls < 0.9 ? 'red' : 'green'} onClick={() => onTabChange('performance')} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -1503,12 +1659,12 @@ function ToolsTab({ tools, loading, onTabChange, onAgentFilter }: { tools: Tools
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={250}>
-              <BarChart data={categoryData} margin={{ top: 5, right: 10, left: 10, bottom: 5 }} className="cursor-pointer">
-                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" vertical={false} />
-                <XAxis dataKey="category" {...AXIS_PROPS} />
-                <YAxis {...AXIS_PROPS} />
+              <BarChart data={categoryData} layout="vertical" margin={{ top: 5, right: 10, left: 10, bottom: 5 }} className="cursor-pointer">
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" horizontal={false} />
+                <XAxis type="number" {...AXIS_PROPS} domain={[0, (dataMax: number) => dataMax === 0 ? 10 : Math.ceil(dataMax * 1.2)]} />
+                <YAxis type="category" dataKey="displayName" width={80} {...AXIS_PROPS} />
                 <Tooltip {...TOOLTIP_STYLE} />
-                <Bar dataKey="count" name="Calls" radius={[4, 4, 0, 0]} onClick={(_data, idx) => { const cat = categoryData[idx]?.category; if (cat) setCategoryFilter(cat === categoryFilter ? null : cat); }}>
+                <Bar dataKey="count" name="Calls" radius={[0, 4, 4, 0]} onClick={(_data, idx) => { const cat = categoryData[idx]?.category; if (cat) setCategoryFilter(cat === categoryFilter ? null : cat); }}>
                   {categoryData.map((entry, i) => (
                     <Cell key={i} fill={entry.fill} opacity={categoryFilter && entry.category !== categoryFilter ? 0.3 : 1} className="cursor-pointer" />
                   ))}
@@ -1547,7 +1703,7 @@ function ToolsTab({ tools, loading, onTabChange, onAgentFilter }: { tools: Tools
                     </TableCell>
                     <TableCell className="text-sm font-mono">{t.name}</TableCell>
                     <TableCell>
-                      <Badge variant="secondary" className="text-xs cursor-pointer hover:bg-secondary/80" onClick={(e) => { e.stopPropagation(); setCategoryFilter(t.category === categoryFilter ? null : t.category); }}>{t.category}</Badge>
+                      <Badge variant="secondary" className="text-xs cursor-pointer hover:bg-secondary/80" onClick={(e) => { e.stopPropagation(); setCategoryFilter(t.category === categoryFilter ? null : t.category); }}>{friendlyCategory(t.category)}</Badge>
                     </TableCell>
                     <TableCell className="text-right text-sm">{t.total_calls}</TableCell>
                     <TableCell className="text-right text-sm">{t.error_count > 0 ? t.error_count : '-'}</TableCell>
@@ -1568,33 +1724,69 @@ function ToolsTab({ tools, loading, onTabChange, onAgentFilter }: { tools: Tools
 // ─── Projects Tab ───────────────────────────────────────────────────────────
 
 function ProjectsTab({ projects, loading, onSelectProject }: { projects: ProjectAnalytics[] | null; loading: boolean; onSelectProject: (projectPath: string) => void }) {
-  if (loading || !projects) return <TabSkeleton label="Loading project analytics..." cards={6} />;
+  const { sort: projSort, toggle: toggleProjSort } = useSort<string>('total_cost');
+  if (loading || !projects) return <TabSkeleton label="Loading project analytics..." table />;
+
+  const sorted = sortRows(projects, projSort.key, projSort.dir, (p, k) => {
+    if (k === 'error_rate') return p.total_tool_calls > 0 ? p.total_tool_errors / p.total_tool_calls : 0;
+    return p[k as keyof ProjectAnalytics] as number | string;
+  });
 
   return (
     <div className="space-y-4">
       <span className="text-sm text-muted-foreground">{projects.length} projects</span>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {projects.slice(0, 15).map(p => (
-          <Card key={p.project_path} className="cursor-pointer hover:border-primary/50 transition-colors" onClick={() => onSelectProject(p.project_path)}>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium truncate" title={p.project_path}>{p.display_name}</CardTitle>
-              <div className="flex gap-1">
-                {p.agents.map(a => (
-                  <div key={a} className="w-2 h-2 rounded-full" style={{ backgroundColor: AGENT_COLORS[a] }} title={AGENT_LABELS[a] ?? a} />
-                ))}
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-1 text-sm">
-              <MetricRow label="Sessions" value={`${p.completed_sessions}/${p.total_sessions}`} />
-              <MetricRow label="Completion" value={formatPct(p.completion_rate)} accent={p.completion_rate < 0.6 ? 'red' : p.completion_rate < 0.8 ? 'yellow' : 'green'} />
-              <MetricRow label="Cost" value={p.total_cost > 0 ? formatCost(p.total_cost) : 'N/A'} />
-              {p.wasted_cost > 0 && <MetricRow label="Wasted" value={formatCost(p.wasted_cost)} accent="red" />}
-              <MetricRow label="Avg Session" value={formatDuration(p.avg_session_minutes)} />
-              {p.total_tool_errors > 0 && <MetricRow label="Tool Errors" value={String(p.total_tool_errors)} accent="yellow" />}
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+      <Card>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <SortableHead label="Project" sortKey="display_name" sort={projSort} onSort={toggleProjSort} />
+              <TableHead>Agents</TableHead>
+              <SortableHead label="Sessions" sortKey="total_sessions" sort={projSort} onSort={toggleProjSort} className="text-right" />
+              <SortableHead label="Completion" sortKey="completion_rate" sort={projSort} onSort={toggleProjSort} className="text-right" />
+              <SortableHead label="Cost" sortKey="total_cost" sort={projSort} onSort={toggleProjSort} className="text-right" />
+              <SortableHead label="Wasted" sortKey="wasted_cost" sort={projSort} onSort={toggleProjSort} className="text-right" />
+              <SortableHead label="Avg Session" sortKey="avg_session_minutes" sort={projSort} onSort={toggleProjSort} className="text-right" />
+              <SortableHead label="Tool Errors" sortKey="error_rate" sort={projSort} onSort={toggleProjSort} className="text-right" />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {sorted.map(p => (
+              <TableRow key={p.project_path} className="cursor-pointer hover:bg-muted/50" onClick={() => onSelectProject(p.project_path)}>
+                <TableCell className="text-sm font-medium" title={p.project_path}>{p.display_name}</TableCell>
+                <TableCell>
+                  <div className="flex gap-1">
+                    {p.agents.map(a => (
+                      <div key={a} className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: AGENT_COLORS[a] }} title={AGENT_LABELS[a] ?? a} />
+                    ))}
+                  </div>
+                </TableCell>
+                <TableCell className="text-right text-sm">{p.completed_sessions} of {p.total_sessions}</TableCell>
+                <TableCell className={`text-right text-sm font-medium ${p.completion_rate < 0.6 ? 'text-red-600' : p.completion_rate < 0.8 ? 'text-yellow-600' : 'text-green-600'}`}>
+                  {formatPct(p.completion_rate)}
+                </TableCell>
+                <TableCell className="text-right text-sm">{p.total_cost > 0 ? formatCost(p.total_cost) : '-'}</TableCell>
+                <TableCell className={`text-right text-sm ${p.wasted_cost > 0 ? 'text-red-600' : ''}`}>
+                  {p.wasted_cost > 0 ? formatCost(p.wasted_cost) : '-'}
+                </TableCell>
+                <TableCell className="text-right text-sm">{formatDuration(p.avg_session_minutes)}</TableCell>
+                <TableCell className="text-right text-sm">
+                  {p.total_tool_errors > 0 ? (
+                    <span className="text-yellow-600" title={`${p.total_tool_errors} errors out of ${p.total_tool_calls} calls`}>
+                      {p.total_tool_errors} / {p.total_tool_calls} ({p.total_tool_calls > 0 ? formatPct(p.total_tool_errors / p.total_tool_calls) : '0%'})
+                    </span>
+                  ) : '-'}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+        {projects.length === 0 && (
+          <div className="text-center py-8">
+            <div className="text-2xl mb-2 opacity-20">[  ]</div>
+            <p className="text-sm text-muted-foreground">No projects found</p>
+          </div>
+        )}
+      </Card>
     </div>
   );
 }
@@ -1645,7 +1837,7 @@ function AdvancedTab({ advanced, failurePatterns, loading, onTabChange, onAgentF
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right text-sm">{s.total_calls}</TableCell>
-                    <TableCell className="text-right text-sm">{s.error_count > 0 ? s.error_count : '-'}</TableCell>
+                    <TableCell className="text-right text-sm" title="Errors include connection failures and timeouts that may not count as completed calls">{s.error_count > 0 ? s.error_count : '-'}</TableCell>
                     <TableCell className={`text-right text-sm font-medium ${successRateColor(s.success_rate)}`}>{formatPct(s.success_rate)}</TableCell>
                     <TableCell className="text-right text-sm">{s.session_count}</TableCell>
                   </TableRow>
@@ -1658,7 +1850,7 @@ function AdvancedTab({ advanced, failurePatterns, loading, onTabChange, onAgentF
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Hourly Effectiveness */}
-        <Card className="cursor-pointer hover:border-primary/50 transition-colors" onClick={() => onTabChange('activity')}>
+        <Card className="cursor-pointer hover:border-primary/50 transition-colors" onClick={() => onTabChange('performance')}>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium">Completion Rate by Hour</CardTitle>
           </CardHeader>
@@ -1710,16 +1902,19 @@ function AdvancedTab({ advanced, failurePatterns, loading, onTabChange, onAgentF
             <div className="text-center">
               <p className="text-2xl font-bold">{conversation_depth.avg_depth.toFixed(1)}</p>
               <p className="text-xs text-muted-foreground">Avg turns/session</p>
+              {conversation_depth.avg_depth > 100 && (
+                <p className="text-[10px] text-muted-foreground/70 mt-0.5">Extended multi-step sessions</p>
+              )}
             </div>
             <div className="text-center">
               <p className="text-2xl font-bold text-green-600">{formatPct(conversation_depth.low_backforth_completion_rate)}</p>
-              <p className="text-xs text-muted-foreground">Completion ({'<'}5 turns)</p>
+              <p className="text-xs text-muted-foreground">Quick sessions ({'<'}5 turns)</p>
             </div>
             <div className="text-center">
               <p className={`text-2xl font-bold ${conversation_depth.high_backforth_completion_rate < 0.5 ? 'text-red-600' : 'text-amber-600'}`}>
                 {formatPct(conversation_depth.high_backforth_completion_rate)}
               </p>
-              <p className="text-xs text-muted-foreground">Completion (5+ turns)</p>
+              <p className="text-xs text-muted-foreground">Deep sessions (5+ turns)</p>
             </div>
           </div>
           <ResponsiveContainer width="100%" height={150}>
@@ -1734,9 +1929,9 @@ function AdvancedTab({ advanced, failurePatterns, loading, onTabChange, onAgentF
         </CardContent>
       </Card>
 
-      {/* Failure Patterns */}
+      {/* Failure Patterns — ensure visible with bottom padding */}
       {failurePatterns && failurePatterns.length > 0 && (
-        <Card>
+        <Card className="mb-8">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium">Recurring Failure Patterns</CardTitle>
           </CardHeader>
@@ -1887,21 +2082,25 @@ function WorkspaceTab() {
         ) : (
           <div className="space-y-2">
             <span className="text-sm text-muted-foreground">{activeSessions.length} active session{activeSessions.length > 1 ? 's' : ''}</span>
-            {activeSessions.map(s => (
-              <Card key={s.session_id}>
-                <CardContent className="pt-3 pb-3 flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-mono">{s.session_id.slice(0, 8)}...</p>
-                    <p className="text-xs text-muted-foreground">{s.project_path}</p>
-                  </div>
-                  <div className="text-right">
-                    <Badge variant="outline" className="text-green-600 border-green-600">Active</Badge>
-                    <p className="text-xs text-muted-foreground mt-1">{s.last_activity_ago}</p>
-                    {s.model && <p className="text-xs text-muted-foreground">{s.model}</p>}
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+            {activeSessions.map(s => {
+              const projectName = s.project_path.split('/').pop() ?? s.project_path;
+              const modelDisplay = s.model?.replace('claude-code-', 'Claude ')?.replace(/-/g, ' ') ?? '';
+              return (
+                <Card key={s.session_id}>
+                  <CardContent className="pt-3 pb-3 flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium">{projectName}</p>
+                      <p className="text-xs text-muted-foreground" title={s.session_id}>{s.project_path}</p>
+                    </div>
+                    <div className="text-right">
+                      <Badge variant="outline" className="text-green-600 border-green-600">Active</Badge>
+                      <p className="text-xs text-muted-foreground mt-1">Duration: {s.last_activity_ago}</p>
+                      {modelDisplay && <p className="text-xs text-muted-foreground">Model: {modelDisplay}</p>}
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
           </div>
         )
       )}
@@ -2315,6 +2514,31 @@ function WorkspaceTab() {
   );
 }
 
+// ─── Advanced Section (collapsible wrapper) ────────────────────────────────
+
+function AdvancedSection({ advanced, failurePatterns, loading, onTabChange, onAgentFilter }: {
+  advanced: AdvancedAnalytics | null; failurePatterns: FailurePattern[] | null; loading: boolean; onTabChange: (tab: string) => void; onAgentFilter?: (agent: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="border-t pt-4">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors w-full text-left"
+      >
+        <span className={`transition-transform ${expanded ? 'rotate-90' : ''}`}>&#x25B6;</span>
+        Advanced Analytics
+        {advanced?.mcp.servers.length ? <Badge variant="secondary" className="text-[10px] ml-1">{advanced.mcp.servers.length} MCP</Badge> : null}
+      </button>
+      {expanded && (
+        <div className="mt-4">
+          <AdvancedTab advanced={advanced} failurePatterns={failurePatterns} loading={loading} onTabChange={onTabChange} onAgentFilter={onAgentFilter} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Token Cache Breakdown ──────────────────────────────────────────────────
 
 function TokenCacheBar({ stats }: { stats: CombinedStats }) {
@@ -2327,22 +2551,32 @@ function TokenCacheBar({ stats }: { stats: CombinedStats }) {
   const outputPct = (totalOutput / totalTokens) * 100;
 
   return (
-    <div className="flex items-center gap-3 text-xs">
-      <div className="flex-1 h-3 rounded-full overflow-hidden bg-muted flex">
-        <div className="bg-blue-500 h-full" style={{ width: `${inputPct}%` }} title={`Input: ${formatTokens(totalInput)}`} />
-        <div className="bg-orange-500 h-full" style={{ width: `${outputPct}%` }} title={`Output: ${formatTokens(totalOutput)}`} />
+    <div>
+      <div className="flex items-center gap-3 text-xs">
+        <div className="flex-1 h-3 rounded-full overflow-hidden bg-muted flex">
+          <div className="bg-blue-500 h-full" style={{ width: `${inputPct}%` }} title={`Input: ${formatTokens(totalInput)}`} />
+          <div className="bg-orange-500 h-full" style={{ width: `${outputPct}%` }} title={`Output: ${formatTokens(totalOutput)}`} />
+        </div>
+        <div className="flex gap-3 text-muted-foreground flex-shrink-0">
+          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500 inline-block" />input: {formatTokens(totalInput)}</span>
+          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-orange-500 inline-block" />output: {formatTokens(totalOutput)}</span>
+        </div>
       </div>
-      <div className="flex gap-3 text-muted-foreground flex-shrink-0">
-        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500 inline-block" />input: {formatTokens(totalInput)}</span>
-        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-orange-500 inline-block" />output: {formatTokens(totalOutput)}</span>
-      </div>
+      <p className="text-[11px] text-muted-foreground/70 mt-1">
+        {totalOutput > totalInput * 2 ? 'Output-heavy — sessions have verbose responses'
+          : totalInput > totalOutput ? 'Input-heavy — large context provided to agents'
+          : 'Balanced token usage across sessions'}
+      </p>
     </div>
   );
 }
 
 // ─── Shared Components ────────────────────────────────────────────────────────
 
-function StatCard({ title, value, accent, onClick }: { title: string; value: string; accent?: 'red' | 'yellow' | 'green'; onClick?: () => void }) {
+function StatCard({ title, value, accent, onClick, trend, trendLabel, tooltip }: {
+  title: string; value: string; accent?: 'red' | 'yellow' | 'green'; onClick?: () => void;
+  trend?: number; trendLabel?: string; tooltip?: string;
+}) {
   const colorClass = accent === 'red' ? 'text-red-600 dark:text-red-400'
     : accent === 'yellow' ? 'text-yellow-600 dark:text-yellow-400'
     : accent === 'green' ? 'text-green-600 dark:text-green-400'
@@ -2350,8 +2584,21 @@ function StatCard({ title, value, accent, onClick }: { title: string; value: str
   return (
     <Card className={onClick ? 'cursor-pointer hover:border-primary/50 transition-colors' : ''} onClick={onClick}>
       <CardContent className="pt-4 pb-3">
-        <p className="text-xs text-muted-foreground">{title}</p>
+        <p className="text-xs text-muted-foreground flex items-center gap-1">
+          {title}
+          {tooltip && (
+            <span className="inline-block w-3.5 h-3.5 rounded-full bg-muted text-[9px] text-center leading-[14px] cursor-help" title={tooltip}>i</span>
+          )}
+        </p>
         <p className={`text-2xl font-bold ${colorClass}`}>{value}</p>
+        {trend !== undefined && trend !== 0 && (
+          <p className={`text-xs mt-0.5 flex items-center gap-1 ${
+            trend > 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'
+          }`}>
+            {trend > 0 ? '↑' : '↓'} {Math.abs(trend).toFixed(0)}%
+            {trendLabel && <span className="text-muted-foreground">{trendLabel}</span>}
+          </p>
+        )}
       </CardContent>
     </Card>
   );
@@ -2415,7 +2662,10 @@ export const CodingAgentsPage: React.FC = () => {
   const [advanced, setAdvanced] = useState<AdvancedAnalytics | null>(null);
   const [failurePatterns, setFailurePatterns] = useState<FailurePattern[] | null>(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('overview');
+  // Read initial tab from URL query param (e.g., ?tab=workspace)
+  const [activeTab, setActiveTab] = useState(() => {
+    try { return new URLSearchParams(window.location.search).get('tab') || 'overview'; } catch { return 'overview'; }
+  });
   const [error, setError] = useState<string | null>(null);
   const [rangePreset, setRangePreset] = useState<DateRangePreset>('today');
   const [sessionProjectFilter, setSessionProjectFilter] = useState<string | undefined>();
@@ -2487,34 +2737,40 @@ export const CodingAgentsPage: React.FC = () => {
         .then(d => setCosts(d))
         .catch(() => {});
     }
-    if (activeTab === 'activity' && !activity) {
-      fetchJson<ActivityData>(buildQuery('/api/coding-agents/activity', range))
-        .then(d => setActivity(d))
-        .catch(() => {});
+    // Performance tab loads both activity + efficiency
+    if (activeTab === 'performance') {
+      if (!activity) {
+        fetchJson<ActivityData>(buildQuery('/api/coding-agents/activity', range))
+          .then(d => setActivity(d))
+          .catch(() => {});
+      }
+      if (!efficiency) {
+        fetchJson<EfficiencyData>(buildQuery('/api/coding-agents/efficiency', range))
+          .then(d => setEfficiency(d))
+          .catch(() => {});
+      }
     }
-    if (activeTab === 'tools' && !tools) {
-      fetchJson<ToolsData>(buildQuery('/api/coding-agents/tools', range))
-        .then(d => setTools(d))
-        .catch(() => {});
-    }
-    if (activeTab === 'efficiency' && !efficiency) {
-      fetchJson<EfficiencyData>(buildQuery('/api/coding-agents/efficiency', range))
-        .then(d => setEfficiency(d))
-        .catch(() => {});
+    // Tools tab loads tools + advanced
+    if (activeTab === 'tools') {
+      if (!tools) {
+        fetchJson<ToolsData>(buildQuery('/api/coding-agents/tools', range))
+          .then(d => setTools(d))
+          .catch(() => {});
+      }
+      if (!advanced) {
+        Promise.all([
+          fetchJson<AdvancedAnalytics>(buildQuery('/api/coding-agents/advanced', range)),
+          fetchJson<{ patterns: FailurePattern[] }>(buildQuery('/api/coding-agents/failure-patterns', range)),
+        ]).then(([adv, fp]) => {
+          setAdvanced(adv);
+          setFailurePatterns(fp.patterns);
+        }).catch(() => {});
+      }
     }
     if (activeTab === 'projects' && !projects) {
       fetchJson<{ projects: ProjectAnalytics[] }>(buildQuery('/api/coding-agents/projects', range))
         .then(d => setProjects(d.projects))
         .catch(() => {});
-    }
-    if (activeTab === 'advanced' && !advanced) {
-      Promise.all([
-        fetchJson<AdvancedAnalytics>(buildQuery('/api/coding-agents/advanced', range)),
-        fetchJson<{ patterns: FailurePattern[] }>(buildQuery('/api/coding-agents/failure-patterns', range)),
-      ]).then(([adv, fp]) => {
-        setAdvanced(adv);
-        setFailurePatterns(fp.patterns);
-      }).catch(() => {});
     }
   }, [activeTab, rangePreset]);
 
@@ -2583,10 +2839,8 @@ export const CodingAgentsPage: React.FC = () => {
             <TabsTrigger value="sessions">Sessions</TabsTrigger>
             <TabsTrigger value="projects">Projects</TabsTrigger>
             <TabsTrigger value="costs">Costs</TabsTrigger>
-            <TabsTrigger value="activity">Activity</TabsTrigger>
-            <TabsTrigger value="efficiency">Efficiency</TabsTrigger>
+            <TabsTrigger value="performance">Performance</TabsTrigger>
             <TabsTrigger value="tools">Tools</TabsTrigger>
-            <TabsTrigger value="advanced">Advanced</TabsTrigger>
             <TabsTrigger value="workspace">Workspace</TabsTrigger>
           </TabsList>
 
@@ -2600,19 +2854,27 @@ export const CodingAgentsPage: React.FC = () => {
             <ProjectsTab projects={projects} loading={activeTab === 'projects' && !projects} onSelectProject={handleSelectProject} />
           </TabsContent>
           <TabsContent value="costs" className="mt-4">
-            <CostsTab costs={costs} loading={activeTab === 'costs' && !costs} onTabChange={setActiveTab} onSelectProject={handleSelectProject} />
+            <CostsTab costs={costs} loading={activeTab === 'costs' && !costs} onTabChange={setActiveTab} onSelectProject={handleSelectProject} cacheSavings={stats ? stats.agents.reduce((s, a) => s + a.totalCacheSavings, 0) : undefined} />
           </TabsContent>
-          <TabsContent value="activity" className="mt-4">
-            <ActivityTab activity={activity} loading={activeTab === 'activity' && !activity} onTabChange={setActiveTab} />
-          </TabsContent>
-          <TabsContent value="efficiency" className="mt-4">
-            <EfficiencyTab efficiency={efficiency} loading={activeTab === 'efficiency' && !efficiency} onTabChange={setActiveTab} onAgentFilter={handleAgentFilter} />
+          <TabsContent value="performance" className="mt-4">
+            {/* Merged Activity + Efficiency */}
+            <div className="space-y-8">
+              <div>
+                <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-4">Activity Patterns</h2>
+                <ActivityTab activity={activity} loading={(activeTab === 'performance') && !activity} onTabChange={setActiveTab} />
+              </div>
+              <div className="border-t pt-6">
+                <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-4">Efficiency Metrics</h2>
+                <EfficiencyTab efficiency={efficiency} loading={(activeTab === 'performance') && !efficiency} onTabChange={setActiveTab} onAgentFilter={handleAgentFilter} />
+              </div>
+            </div>
           </TabsContent>
           <TabsContent value="tools" className="mt-4">
-            <ToolsTab tools={tools} loading={activeTab === 'tools' && !tools} onTabChange={setActiveTab} onAgentFilter={handleAgentFilter} />
-          </TabsContent>
-          <TabsContent value="advanced" className="mt-4">
-            <AdvancedTab advanced={advanced} failurePatterns={failurePatterns} loading={activeTab === 'advanced' && !advanced} onTabChange={setActiveTab} onAgentFilter={handleAgentFilter} />
+            <div className="space-y-8">
+              <ToolsTab tools={tools} loading={activeTab === 'tools' && !tools} onTabChange={setActiveTab} onAgentFilter={handleAgentFilter} />
+              {/* Advanced Analytics — collapsible section within Tools */}
+              <AdvancedSection advanced={advanced} failurePatterns={failurePatterns} loading={activeTab === 'tools' && !advanced} onTabChange={setActiveTab} onAgentFilter={handleAgentFilter} />
+            </div>
           </TabsContent>
           <TabsContent value="workspace" className="mt-4">
             <WorkspaceTab />

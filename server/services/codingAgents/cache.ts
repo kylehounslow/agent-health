@@ -96,20 +96,30 @@ const DIR_SIGNATURE_FNS: Record<AgentKind, () => Promise<string>> = {
 
 // ─── Reader Cache ───────────────────────────────────────────────────────────
 
+/** How long to trust the cached signature before re-checking the directory (ms). */
+const SIGNATURE_TTL_MS = 5_000;
+
 export class ReaderCache {
   private sessions: AgentSession[] = [];
   private fileMap = new Map<string, { filePath: string; mtimeMs: number }>();
   private signature = '';
+  private lastSignatureCheck = 0;
   private lastFullRefresh = 0;
   private refreshLock: Promise<void> | null = null;
 
   constructor(private reader: CodingAgentReader) {}
 
-  /** Return cached sessions, refreshing if directory signature changed. */
+  /** Return cached sessions, refreshing if directory signature changed.
+   *  Skips signature check if within TTL window to avoid blocking the event loop. */
   async getSessions(): Promise<AgentSession[]> {
     // If a refresh is in progress, wait for it
     if (this.refreshLock) {
       await this.refreshLock;
+      return this.sessions;
+    }
+
+    // If we have cached data and the signature was checked recently, return immediately
+    if (this.sessions.length > 0 && (Date.now() - this.lastSignatureCheck) < SIGNATURE_TTL_MS) {
       return this.sessions;
     }
 
@@ -118,6 +128,7 @@ export class ReaderCache {
 
     try {
       const currentSig = await sigFn();
+      this.lastSignatureCheck = Date.now();
       if (currentSig !== this.signature || this.sessions.length === 0) {
         await this.fullRefresh();
       }
@@ -194,9 +205,11 @@ export class ReaderCache {
       try {
         const stat = await fs.stat(cached.filePath);
         if (stat.mtimeMs > cached.mtimeMs) {
-          // File changed — re-read this session
-          const updated = await this.reader.getSessions();
-          const fresh = updated.find(s => s.session_id === session.session_id);
+          // File changed — re-read only this single session file
+          let fresh: AgentSession | null = null;
+          if (this.reader.rereadSession) {
+            fresh = await this.reader.rereadSession(cached.filePath);
+          }
           if (fresh) {
             const idx = this.sessions.findIndex(s => s.session_id === session.session_id);
             if (idx !== -1) {
@@ -205,9 +218,6 @@ export class ReaderCache {
               needsMergeRebuild = true;
             }
           }
-          // After a full reader.getSessions() call, no need to check more files
-          // since we already have fresh data for all sessions
-          break;
         }
       } catch { /* file may have been deleted */ }
     }

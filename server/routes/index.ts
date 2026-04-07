@@ -22,6 +22,7 @@ import evaluationRoutes from './evaluation';
 import debugRoutes from './debug';
 import codingAgentsRoutes from './codingAgents';
 import claudeCodeWorkspaceRoutes from './claudeCodeWorkspace';
+import leaderboardRoutes from './leaderboard';
 import { codingAnalyticsEnabled } from '../services/codingAgents';
 
 const router = Router();
@@ -49,6 +50,7 @@ router.use(debugRoutes);         // /api/debug
 if (codingAnalyticsEnabled) {
   router.use(codingAgentsRoutes);  // /api/coding-agents/*
   router.use(claudeCodeWorkspaceRoutes);  // /api/coding-agents/claude-code/*
+  router.use(leaderboardRoutes);  // /api/coding-agents/leaderboard/*
 }
 
 export default router;

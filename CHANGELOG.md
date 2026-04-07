@@ -20,6 +20,21 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - Unit tests for apiKeyAuth middleware, RemoteAggregator, createRegistry, remoteConfig, and session cache (62 new tests)
 - Clickable drill-down navigation across all dashboard tabs (Tools, Costs, Activity, Efficiency, Advanced)
 - Dismissable filter badges with "Clear all filters" for drill-down context visibility
+- Enterprise leaderboard: team rankings, badges, recommendations, and team insights via OpenSearch aggregations
+- Leaderboard API routes (11 endpoints) for rankings, badges, recommendations, and team analytics
+- UX: Reduced tabs from 9 to 7 — merged Activity+Efficiency into "Performance", collapsed Advanced into Tools
+- UX: Grouped Overview metric cards into "Usage" and "Cost" sections with section headers
+- UX: StatCard trend indicators with directional arrows, percentage change, and tooltip support
+- UX: Expandable first prompt column (2-line clamp with click-to-expand) on Sessions tab
+- UX: Color-coded status badges (green=Completed, red=Abandoned) replacing plain text
+- UX: Relative timestamps ("2h ago") with full date on second line in Sessions tab
+- UX: Projects tab converted to sortable table with error ratios ("15 / 680 (2.2%)")
+- UX: Smart sparse-data handling — single-agent/model charts replaced with stat displays, adaptive Y-axis
+- UX: Monthly cost projection ("At current rate: ~$X/month") on Costs tab
+- UX: Friendly tool category labels (e.g., "File I/O" instead of "file-io") with horizontal bar chart
+- UX: Info tooltips on efficiency metrics explaining what "Tool Success" and "Completion Rate" mean
+- UX: Clickable tool errors linking from Efficiency to Tools tab
+- UX: Improved conversation depth labels ("Quick sessions" / "Deep sessions" instead of "Completion")
 
 ### Changed
 - Non-blocking cache warmup: server responds immediately, session data loads in background (~3s)
