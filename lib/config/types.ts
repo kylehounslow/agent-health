@@ -140,10 +140,29 @@ export interface UserConfig {
   judge?: JudgeConfig;
 
   /**
+   * Remote servers for aggregating coding agent data from multiple machines.
+   * Each remote runs `agent-health serve --headless` and this dashboard
+   * fetches + merges their session data into a unified view.
+   */
+  remoteServers?: RemoteServerConfig[];
+
+  /**
    * Whether to extend default config or replace entirely
    * Default: true (extends)
    */
   extends?: boolean;
+}
+
+/**
+ * Remote server connection configuration
+ */
+export interface RemoteServerConfig {
+  /** Display name (e.g. "ec2-build-1") */
+  name: string;
+  /** Server URL (e.g. "http://10.0.1.50:4001") */
+  url: string;
+  /** Bearer token for API key auth (matches --api-key on remote) */
+  apiKey?: string;
 }
 
 /**

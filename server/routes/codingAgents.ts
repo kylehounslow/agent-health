@@ -14,6 +14,7 @@
 import { Router, Request, Response } from 'express';
 import { codingAgentRegistry } from '../services/codingAgents';
 import type { DateRange, AgentKind } from '../services/codingAgents/types';
+import { RemoteAggregator } from '../services/codingAgents/remoteAggregator';
 
 const router = Router();
 
@@ -32,11 +33,15 @@ function parseDateRange(req: Request): DateRange | undefined {
 router.get('/api/coding-agents/available', async (_req: Request, res: Response) => {
   try {
     const readers = await codingAgentRegistry.getAvailableReaders();
+    const remoteServers = codingAgentRegistry instanceof RemoteAggregator
+      ? codingAgentRegistry.getRemoteServerNames()
+      : [];
     res.json({
       agents: readers.map(r => ({
         name: r.agentName,
         displayName: r.displayName,
       })),
+      remoteServers,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -118,7 +123,8 @@ router.get('/api/coding-agents/sessions/:agent/:sessionId', async (req: Request,
   try {
     const agent = req.params.agent as AgentKind;
     const sessionId = req.params.sessionId;
-    const detail = await codingAgentRegistry.getSessionDetail(agent, sessionId);
+    const serverName = req.query.server as string | undefined;
+    const detail = await codingAgentRegistry.getSessionDetail(agent, sessionId, serverName);
     if (!detail) {
       res.status(404).json({ error: 'Session not found' });
       return;

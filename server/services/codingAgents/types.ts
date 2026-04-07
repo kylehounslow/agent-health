@@ -31,6 +31,8 @@ export interface AgentSession {
   estimated_cost: number;
   uses_mcp: boolean;
   model?: string;
+  /** Server name for multi-server aggregation ("local" or remote server name). */
+  server_name?: string;
   /** @internal Source file path, used by cache layer. Stripped from API responses. */
   _filePath?: string;
 }

@@ -81,6 +81,7 @@ interface Session {
   estimated_cost: number;
   session_completed: boolean;
   tool_counts: Record<string, number>;
+  server_name?: string;
 }
 interface DailyCost {
   date: string;
@@ -709,11 +710,12 @@ function SessionDetailPanel({ session, onClose }: { session: Session; onClose: (
 
   useEffect(() => {
     setLoading(true);
-    fetchJson<SessionDetail>(`/api/coding-agents/sessions/${session.agent}/${session.session_id}`)
+    const serverParam = session.server_name && session.server_name !== 'local' ? `?server=${encodeURIComponent(session.server_name)}` : '';
+    fetchJson<SessionDetail>(`/api/coding-agents/sessions/${session.agent}/${session.session_id}${serverParam}`)
       .then(d => setDetail(d))
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [session.agent, session.session_id]);
+  }, [session.agent, session.session_id, session.server_name]);
 
   // Close on click outside
   useEffect(() => {
@@ -1086,9 +1088,14 @@ function SessionsTab({ range, loading: initialLoading, initialProject, initialAg
                 }).map(s => (
                   <TableRow key={`${s.agent}-${s.session_id}`} className="cursor-pointer hover:bg-muted/50" onClick={() => setSelectedSession(s)}>
                     <TableCell>
-                      <Badge variant="outline" style={{ borderColor: AGENT_COLORS[s.agent], color: AGENT_COLORS[s.agent] }}>
-                        {AGENT_LABELS[s.agent] ?? s.agent}
-                      </Badge>
+                      <div className="flex items-center gap-1">
+                        <Badge variant="outline" style={{ borderColor: AGENT_COLORS[s.agent], color: AGENT_COLORS[s.agent] }}>
+                          {AGENT_LABELS[s.agent] ?? s.agent}
+                        </Badge>
+                        {s.server_name && s.server_name !== 'local' && (
+                          <Badge variant="secondary" className="text-[10px] px-1">{s.server_name}</Badge>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell className="max-w-xs truncate text-sm" title={s.first_prompt}>
                       {s.first_prompt || <span className="text-muted-foreground italic">No prompt</span>}

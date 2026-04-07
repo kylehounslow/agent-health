@@ -114,7 +114,7 @@ function computeStatsFromSessions(sessions: AgentSession[], agent: AgentKind): A
   };
 }
 
-class CodingAgentRegistry {
+export class CodingAgentRegistry {
   private readers: CodingAgentReader[] = [
     new ClaudeCodeReader(),
     new KiroReader(),
@@ -432,7 +432,7 @@ class CodingAgentRegistry {
   // ─── Phase 2: Session Detail ────────────────────────────────────────────────
 
   /** Get detail for a specific session (conversation messages) */
-  async getSessionDetail(agent: AgentKind, sessionId: string): Promise<SessionDetail | null> {
+  async getSessionDetail(agent: AgentKind, sessionId: string, _serverName?: string): Promise<SessionDetail | null> {
     const reader = this.getReader(agent);
     if (!reader?.getSessionDetail) return null;
     return reader.getSessionDetail(sessionId);
@@ -708,4 +708,17 @@ class CodingAgentRegistry {
   }
 }
 
-export const codingAgentRegistry = new CodingAgentRegistry();
+// Conditionally create RemoteAggregator if remote servers are configured
+import { getRemoteServers } from './remoteConfig';
+import { RemoteAggregator } from './remoteAggregator';
+
+function createRegistry(): CodingAgentRegistry {
+  const remotes = getRemoteServers();
+  if (remotes.length > 0) {
+    console.log(`[CodingAgents] Remote aggregation enabled: ${remotes.map(r => r.name).join(', ')}`);
+    return new RemoteAggregator(remotes);
+  }
+  return new CodingAgentRegistry();
+}
+
+export const codingAgentRegistry = createRegistry();

@@ -28,6 +28,7 @@ import {
   createInitCommand,
   createMigrateCommand,
   createCompareServicesCommand,
+  createRemoteCommand,
 } from './commands/index.js';
 
 // Get package.json for version
@@ -87,7 +88,9 @@ program
 program
   .option('-p, --port <number>', 'Server port', '4001')
   .option('-e, --env-file <path>', 'Load environment variables from file (e.g., .env)')
-  .option('--no-browser', 'Do not open browser automatically');
+  .option('--no-browser', 'Do not open browser automatically')
+  .option('--headless', 'Run API server only (no frontend, no browser)')
+  .option('--api-key <key>', 'Require API key for coding-agents endpoints');
 
 program.action(async (options) => {
   console.log(chalk.cyan.bold(`\n  Agent Health v${version} - AI Agent Evaluation Framework\n`));
@@ -104,25 +107,32 @@ program.action(async (options) => {
   }
 
   const port = parseInt(options.port, 10);
-  const spinner = ora('Starting server...').start();
+  const headless = options.headless || false;
+  const spinner = ora(headless ? 'Starting headless API server...' : 'Starting server...').start();
 
   try {
     // Start the server
-    await startServer({ port });
-    spinner.succeed('Server started');
+    await startServer({ port, headless, apiKey: options.apiKey });
+    spinner.succeed(headless ? 'Headless API server started' : 'Server started');
 
-    console.log(chalk.gray('\n  Configuration:'));
-    console.log(chalk.gray(`    Storage: Sample data (configure OpenSearch for persistence)`));
-    console.log(chalk.gray(`    Agent: Select in UI (Demo Agent for mock, real agents require endpoints)`));
-    console.log(chalk.gray(`    Judge: Select in UI (Demo Judge for mock, Bedrock requires AWS creds)\n`));
+    if (headless) {
+      console.log(chalk.green(`\n  API server running on http://0.0.0.0:${port}`));
+      if (options.apiKey) console.log(chalk.gray('  API key authentication enabled'));
+      console.log(chalk.gray('  Mode: headless (API only, no frontend)\n'));
+    } else {
+      console.log(chalk.gray('\n  Configuration:'));
+      console.log(chalk.gray(`    Storage: Sample data (configure OpenSearch for persistence)`));
+      console.log(chalk.gray(`    Agent: Select in UI (Demo Agent for mock, real agents require endpoints)`));
+      console.log(chalk.gray(`    Judge: Select in UI (Demo Judge for mock, Bedrock requires AWS creds)\n`));
 
-    const url = `http://localhost:${port}`;
-    console.log(chalk.green(`  Server running at ${chalk.bold(url)}\n`));
-    console.log(chalk.green(`  Demo data loaded`));
+      const url = `http://localhost:${port}`;
+      console.log(chalk.green(`  Server running at ${chalk.bold(url)}\n`));
+      console.log(chalk.green(`  Demo data loaded`));
 
-    if (options.browser !== false) {
-      console.log(chalk.gray('  Opening browser...'));
-      await open(url);
+      if (options.browser !== false) {
+        console.log(chalk.gray('  Opening browser...'));
+        await open(url);
+      }
     }
 
     console.log(chalk.gray('  Press Ctrl+C to stop\n'));
@@ -144,6 +154,7 @@ program.addCommand(createDoctorCommand());
 program.addCommand(createInitCommand());
 program.addCommand(createMigrateCommand());
 program.addCommand(createCompareServicesCommand());
+program.addCommand(createRemoteCommand());
 
 // Add serve command as an alias for the default action
 program
@@ -151,22 +162,31 @@ program
   .description('Start the Agent Health server (same as default action)')
   .option('-p, --port <number>', 'Server port', '4001')
   .option('--no-browser', 'Do not open browser automatically')
+  .option('--headless', 'Run API server only (no frontend, no browser)')
+  .option('--api-key <key>', 'Require API key for coding-agents endpoints')
   .action(async (options) => {
     console.log(chalk.cyan.bold(`\n  Agent Health v${version} - AI Agent Evaluation Framework\n`));
 
     const port = parseInt(options.port, 10);
-    const spinner = ora('Starting server...').start();
+    const headless = options.headless || false;
+    const spinner = ora(headless ? 'Starting headless API server...' : 'Starting server...').start();
 
     try {
-      await startServer({ port });
-      spinner.succeed('Server started');
+      await startServer({ port, headless, apiKey: options.apiKey });
+      spinner.succeed(headless ? 'Headless API server started' : 'Server started');
 
       const url = `http://localhost:${port}`;
-      console.log(chalk.green(`  Server running at ${chalk.bold(url)}\n`));
+      if (headless) {
+        console.log(chalk.green(`  API server running on http://0.0.0.0:${port}`));
+        if (options.apiKey) console.log(chalk.gray('  API key authentication enabled'));
+        console.log(chalk.gray('  Mode: headless (API only, no frontend)\n'));
+      } else {
+        console.log(chalk.green(`  Server running at ${chalk.bold(url)}\n`));
 
-      if (options.browser !== false) {
-        console.log(chalk.gray('  Opening browser...'));
-        await open(url);
+        if (options.browser !== false) {
+          console.log(chalk.gray('  Opening browser...'));
+          await open(url);
+        }
       }
 
       console.log(chalk.gray('  Press Ctrl+C to stop\n'));
