@@ -6,26 +6,23 @@
 
 ## What is Agent Health?
 
-Agent Health is an evaluation, observability, and analytics framework for AI agents. It provides two core capabilities:
+Agent Health is an evaluation and observability framework for AI agents. It helps you measure agent performance through "Golden Path" trajectory comparison — where an LLM judge evaluates agent actions against expected outcomes — and provides deep observability into agent execution via OpenTelemetry traces.
 
-1. **Coding Agent Analytics** — A unified dashboard for monitoring Claude Code, Kiro, and Codex CLI usage. Track costs, tool usage, activity patterns, and efficiency across all your coding agents — locally or across remote build servers.
-
-2. **Agent Evaluation** — Measure agent performance through "Golden Path" trajectory comparison, where an LLM judge evaluates agent actions against expected outcomes.
+It also includes a **Coding Agent Analytics** dashboard for monitoring Claude Code, Kiro, and Codex CLI usage across local and remote machines.
 
 **Who uses Agent Health:**
-- Developers using AI coding agents who want visibility into usage, costs, and productivity
 - AI teams building autonomous agents (RCA, customer support, data analysis)
-- Engineering managers monitoring coding agent adoption across remote build environments
 - QA engineers testing agent behavior across scenarios
+- Platform teams monitoring agent performance in production
+- Developers using AI coding agents who want visibility into usage, costs, and productivity
 
 **Key capabilities:**
-- Unified coding agent dashboard with cost estimation, tool analytics, and activity patterns
-- Multi-server monitoring — aggregate data from remote EC2/build servers into one view
 - Real-time agent execution streaming and visualization
 - LLM-based evaluation with pass/fail scoring
 - Batch experiments comparing agents and models
 - OpenTelemetry trace integration for performance analysis
 - Pluggable connectors for different agent types (REST, SSE, CLI)
+- Coding agent analytics with cost estimation, tool usage, and multi-server monitoring
 
 ## Quick Start
 
@@ -41,6 +38,17 @@ Opens http://localhost:4001 with pre-loaded sample data for exploration.
 - [Connect Your Agent](./docs/CONFIGURATION.md) - Configure your own agent
 
 ## Features
+
+### Agent Evaluation & Observability
+
+- **Evals**: Real-time agent evaluation with trajectory streaming
+- **Experiments**: Batch evaluation runs with configurable parameters
+- **Compare**: Side-by-side trace comparison with aligned and merged views
+- **Agent Traces**: Table-based trace view with latency histogram, filtering, and detailed flyout with input/output display
+- **Live Traces**: Real-time trace monitoring with auto-refresh and filtering
+- **Trace Views**: Timeline and Flow visualizations for debugging
+- **Reports**: Evaluation reports with LLM judge reasoning
+- **Connectors**: Pluggable protocol adapters for different agent types
 
 ### Coding Agent Analytics
 
@@ -66,17 +74,6 @@ agent-health remote add --name ec2-build --url http://10.0.1.50:4001 --api-key s
 agent-health remote test   # verify connectivity
 agent-health               # dashboard aggregates all servers automatically
 ```
-
-### Agent Evaluation & Observability
-
-- **Evals**: Real-time agent evaluation with trajectory streaming
-- **Experiments**: Batch evaluation runs with configurable parameters
-- **Compare**: Side-by-side trace comparison with aligned and merged views
-- **Agent Traces**: Table-based trace view with latency histogram, filtering, and detailed flyout with input/output display
-- **Live Traces**: Real-time trace monitoring with auto-refresh and filtering
-- **Trace Views**: Timeline and Flow visualizations for debugging
-- **Reports**: Evaluation reports with LLM judge reasoning
-- **Connectors**: Pluggable protocol adapters for different agent types
 
 ### Supported Connectors
 
