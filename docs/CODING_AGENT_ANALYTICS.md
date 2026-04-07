@@ -126,6 +126,15 @@ All endpoints support optional `from` and `to` query parameters for date range f
 | `GET /api/coding-agents/failure-patterns` | Recurring tool failure patterns |
 | `GET /api/coding-agents/export` | Export all data as JSON or CSV (`format=json|csv`) |
 
+### Remote Server Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/remote-servers` | List configured remote servers (API keys masked) |
+| `POST /api/remote-servers` | Add a remote server (`{ name, url, apiKey? }`) |
+| `DELETE /api/remote-servers/:name` | Remove a remote server |
+| `POST /api/remote-servers/:name/test` | Test connectivity to a remote server |
+
 ### Workspace Endpoints
 
 | Endpoint | Description |
@@ -231,6 +240,8 @@ agent-health remote test
 # Start the dashboard — automatically aggregates from all servers
 agent-health
 ```
+
+Or use the **Settings UI** — go to Settings > Remote Servers to add, test, and remove servers from the browser.
 
 Or configure via `agent-health.config.json`:
 

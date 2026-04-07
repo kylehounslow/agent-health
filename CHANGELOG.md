@@ -11,11 +11,17 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ### Added
 - Remote build server support: headless mode (`--headless`, `--api-key`) for running on remote machines, local proxy aggregator merging data from multiple servers
+- Settings UI for remote server management with add/remove/test connectivity
 - CLI commands for remote server management: `remote add`, `remote remove`, `remote list`, `remote test`
 - API key authentication middleware for securing remote coding-agents endpoints
 - Server name badges in sessions table for multi-server environments
 - Clickable drill-down navigation across all dashboard tabs (Tools, Costs, Activity, Efficiency, Advanced)
 - Dismissable filter badges with "Clear all filters" for drill-down context visibility
+
+### Changed
+- Non-blocking cache warmup: server responds immediately, session data loads in background (~3s)
+- Parallel session file parsing with batched concurrency for faster startup
+- Streaming file reads for project path resolution instead of loading entire files
 - Coding Agent Analytics: unified dashboard for Claude Code, Kiro, and Codex CLI usage data
 - Plugin-based reader system for ingesting local session data from ~/.claude/, ~/.kiro/, and ~/.codex/
 - API routes for coding agent stats, sessions, costs, activity patterns, and tool usage (/api/coding-agents/*)
