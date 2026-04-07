@@ -15,6 +15,9 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - CLI commands for remote server management: `remote add`, `remote remove`, `remote list`, `remote test`
 - API key authentication middleware for securing remote coding-agents endpoints
 - Server name badges in sessions table for multi-server environments
+- Feature toggle to disable Coding Agent Analytics (`AGENT_HEALTH_DISABLE_CODING_ANALYTICS=true` or `codingAgentAnalytics: false` in config)
+- Graceful shutdown handler (SIGTERM/SIGINT) — stops background timers, drains connections
+- Unit tests for apiKeyAuth middleware, RemoteAggregator, createRegistry, remoteConfig, and session cache (62 new tests)
 - Clickable drill-down navigation across all dashboard tabs (Tools, Costs, Activity, Efficiency, Advanced)
 - Dismissable filter badges with "Clear all filters" for drill-down context visibility
 
@@ -22,6 +25,9 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - Non-blocking cache warmup: server responds immediately, session data loads in background (~3s)
 - Parallel session file parsing with batched concurrency for faster startup
 - Streaming file reads for project path resolution instead of loading entire files
+- Remote aggregator uses `Promise.allSettled` — one failing remote no longer blocks local data
+- Background cache refresh only invalidates merged cache when data actually changed
+- Health endpoint now returns feature flags for frontend conditional rendering
 - Coding Agent Analytics: unified dashboard for Claude Code, Kiro, and Codex CLI usage data
 - Plugin-based reader system for ingesting local session data from ~/.claude/, ~/.kiro/, and ~/.codex/
 - API routes for coding agent stats, sessions, costs, activity patterns, and tool usage (/api/coding-agents/*)

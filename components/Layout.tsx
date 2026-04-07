@@ -74,7 +74,7 @@ const testingSubItems = [
 export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { status, version, loading } = useServerStatus();
+  const { status, version, loading, features } = useServerStatus();
 
   // Determine if testing section should be open based on current path
   const isTestingPath = location.pathname.startsWith("/test-cases") ||
@@ -192,7 +192,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
           <SidebarGroup>
             <SidebarGroupContent>
               <SidebarMenu className="space-y-1">
-                {navItems.map((item) => (
+                {navItems.filter(item => item.to !== '/coding-agents' || features.codingAgentAnalytics).map((item) => (
                   <SidebarMenuItem key={item.to}>
                     <SidebarMenuButton
                       asChild

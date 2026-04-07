@@ -32,10 +32,20 @@ export class RemoteAggregator extends CodingAgentRegistry {
   }
 
   override async getAllSessions(range?: DateRange): Promise<AgentSession[]> {
-    const [localSessions, ...remoteSessions] = await Promise.all([
+    // Use Promise.allSettled so one failing remote doesn't block local data
+    const results = await Promise.allSettled([
       super.getAllSessions(range),
       ...this.remoteServers.map(s => this.fetchRemoteSessions(s, range)),
     ]);
+
+    const localSessions = results[0].status === 'fulfilled' ? results[0].value : [];
+    if (results[0].status === 'rejected') {
+      console.warn('[RemoteAggregator] Local session fetch failed:', results[0].reason);
+    }
+
+    const remoteSessions = results.slice(1)
+      .filter((r): r is PromiseFulfilledResult<AgentSession[]> => r.status === 'fulfilled')
+      .map(r => r.value);
 
     // Tag local sessions
     const tagged = localSessions.map(s => ({ ...s, server_name: 'local' }));

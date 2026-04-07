@@ -167,8 +167,9 @@ export class ReaderCache {
     }
   }
 
-  /** Re-read only active (non-completed) sessions whose file mtime changed. */
-  async refreshActiveSessions(): Promise<void> {
+  /** Re-read only active (non-completed) sessions whose file mtime changed.
+   *  Returns true if any data was updated. */
+  async refreshActiveSessions(): Promise<boolean> {
     // First check if directory signature changed (new sessions)
     const sigFn = DIR_SIGNATURE_FNS[this.reader.agentName];
     if (sigFn) {
@@ -176,14 +177,14 @@ export class ReaderCache {
         const currentSig = await sigFn();
         if (currentSig !== this.signature) {
           await this.fullRefresh();
-          return;
+          return true;
         }
       } catch { /* ignore */ }
     }
 
     // Find active sessions and check their file mtimes
     const activeSessions = this.sessions.filter(s => !s.session_completed);
-    if (activeSessions.length === 0) return;
+    if (activeSessions.length === 0) return false;
 
     let needsMergeRebuild = false;
     for (const session of activeSessions) {
@@ -214,6 +215,7 @@ export class ReaderCache {
     if (needsMergeRebuild) {
       this.lastFullRefresh = Date.now();
     }
+    return needsMergeRebuild;
   }
 
   getLastRefreshTime(): number {
@@ -287,11 +289,13 @@ export class SessionCacheManager {
     if (this.refreshTimer) return;
     this.refreshTimer = setInterval(async () => {
       try {
-        await Promise.all(
+        const results = await Promise.all(
           [...this.readerCaches.values()].map(rc => rc.refreshActiveSessions())
         );
-        // Invalidate merged cache so next request rebuilds
-        this.mergedCache = null;
+        // Only invalidate merged cache if any reader actually updated data
+        if (results.some(changed => changed)) {
+          this.mergedCache = null;
+        }
       } catch { /* non-fatal */ }
     }, intervalMs);
     // Don't prevent Node.js from exiting

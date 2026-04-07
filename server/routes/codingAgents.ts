@@ -12,7 +12,11 @@
  */
 
 import { Router, Request, Response } from 'express';
-import { codingAgentRegistry } from '../services/codingAgents';
+import { codingAgentRegistry as _registry } from '../services/codingAgents';
+
+// Routes are only mounted when codingAnalyticsEnabled is true (see routes/index.ts),
+// so the registry is guaranteed to be non-null here.
+const codingAgentRegistry = _registry!;
 import type { DateRange, AgentKind } from '../services/codingAgents/types';
 import { RemoteAggregator } from '../services/codingAgents/remoteAggregator';
 

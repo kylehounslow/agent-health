@@ -271,6 +271,24 @@ Or configure via `agent-health.config.json`:
 - **Server badges**: Sessions from remote servers show a colored badge with the server name
 - **Transparent aggregation**: All analytics (stats, costs, activity, tools, etc.) automatically include remote data
 
+## Feature Toggle
+
+Coding Agent Analytics can be disabled entirely without affecting the core evaluation features:
+
+```bash
+# Via environment variable
+AGENT_HEALTH_DISABLE_CODING_ANALYTICS=true npx @opensearch-project/agent-health
+```
+
+Or in `agent-health.config.json`:
+```json
+{
+  "codingAgentAnalytics": false
+}
+```
+
+When disabled: no routes are mounted, no background timers run, and the "Coding Agents" nav tab is hidden. All evaluation features continue to work normally.
+
 ## Privacy
 
 All data stays local. The dashboard reads session files directly from your filesystem (`~/.claude/`, `~/.kiro/`, `~/.codex/`). No data is sent to any external service. The `_filePath` internal field used for caching is stripped from all API responses.

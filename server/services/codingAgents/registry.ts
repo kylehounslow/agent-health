@@ -128,6 +128,11 @@ export class CodingAgentRegistry {
     this.cacheManager.startBackgroundRefresh(30_000);
   }
 
+  /** Stop background refresh timers (for graceful shutdown). */
+  stopBackgroundRefresh(): void {
+    this.cacheManager.stopBackgroundRefresh();
+  }
+
   /** Get all readers whose data directories exist on this machine */
   async getAvailableReaders(): Promise<CodingAgentReader[]> {
     const checks = await Promise.all(
