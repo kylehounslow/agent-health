@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export { codingAgentRegistry } from './registry';
+export { codingAgentRegistry } from './createRegistry';
 export type {
   AgentKind,
   AgentSession,

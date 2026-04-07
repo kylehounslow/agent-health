@@ -708,17 +708,3 @@ export class CodingAgentRegistry {
   }
 }
 
-// Conditionally create RemoteAggregator if remote servers are configured
-import { getRemoteServers } from './remoteConfig';
-import { RemoteAggregator } from './remoteAggregator';
-
-function createRegistry(): CodingAgentRegistry {
-  const remotes = getRemoteServers();
-  if (remotes.length > 0) {
-    console.log(`[CodingAgents] Remote aggregation enabled: ${remotes.map(r => r.name).join(', ')}`);
-    return new RemoteAggregator(remotes);
-  }
-  return new CodingAgentRegistry();
-}
-
-export const codingAgentRegistry = createRegistry();
