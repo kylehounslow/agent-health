@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { ENV_CONFIG } from '@/lib/config';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip,
@@ -622,11 +622,18 @@ function OverviewWelcome({ agents, rangePreset, onRangeChange }: { agents: Agent
   );
 }
 
+const GETTING_STARTED_KEY = 'agent-health:getting-started-dismissed';
+
 function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange }: { stats: CombinedStats | null; agents: AgentInfo[]; onTabChange: (tab: string) => void; rangePreset: DateRangePreset; onRangeChange: (p: DateRangePreset) => void }) {
+  const [showGuide, setShowGuide] = useState(() => {
+    try { return localStorage.getItem(GETTING_STARTED_KEY) !== 'true'; } catch { return true; }
+  });
   if (!stats) return <OverviewSkeleton />;
 
-  // Show welcome state when no sessions exist
-  if (stats.totalSessions === 0) {
+  const hasData = stats.totalSessions > 0;
+
+  // No data — always show getting started (ignore dismissed state)
+  if (!hasData) {
     return <OverviewWelcome agents={agents} rangePreset={rangePreset} onRangeChange={onRangeChange} />;
   }
 
@@ -645,8 +652,66 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange }:
   const totalCompleted = stats.agents.reduce((s, a) => s + a.completedSessions, 0);
   const cacheSavings = stats.agents.reduce((s, a) => s + a.totalCacheSavings, 0);
 
+  const dismissGuide = () => {
+    setShowGuide(false);
+    try { localStorage.setItem(GETTING_STARTED_KEY, 'true'); } catch { /* ignore */ }
+  };
+  const enableGuide = () => {
+    setShowGuide(true);
+    try { localStorage.removeItem(GETTING_STARTED_KEY); } catch { /* ignore */ }
+  };
+
   return (
     <div className="space-y-6">
+      {/* Dismissable getting started guide */}
+      {showGuide && (
+        <Card className="border-dashed relative">
+          <button
+            onClick={dismissGuide}
+            className="absolute top-3 right-3 text-muted-foreground hover:text-foreground text-sm px-1.5"
+            title="Dismiss getting started guide"
+          >&times;</button>
+          <CardContent className="pt-5 pb-5">
+            <p className="text-sm font-medium mb-3">Getting Started</p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs text-muted-foreground">
+              {agents.map(a => (
+                <div key={a.name} className="flex items-start gap-2">
+                  <span className="text-green-500 mt-0.5">&#x2713;</span>
+                  <span><span className="font-medium text-foreground">{a.displayName || a.name}</span> — detected and tracking sessions</span>
+                </div>
+              ))}
+              {!agents.some(a => a.name === 'claude-code') && (
+                <div className="flex items-start gap-2">
+                  <span className="text-muted-foreground/50 mt-0.5">&#x25CB;</span>
+                  <span>Claude Code — <code className="text-[11px] bg-muted px-1 rounded">npm i -g @anthropic-ai/claude-code</code></span>
+                </div>
+              )}
+              {!agents.some(a => a.name === 'kiro') && (
+                <div className="flex items-start gap-2">
+                  <span className="text-muted-foreground/50 mt-0.5">&#x25CB;</span>
+                  <span>Kiro — download from kiro.dev</span>
+                </div>
+              )}
+              {!agents.some(a => a.name === 'codex') && (
+                <div className="flex items-start gap-2">
+                  <span className="text-muted-foreground/50 mt-0.5">&#x25CB;</span>
+                  <span>Codex — <code className="text-[11px] bg-muted px-1 rounded">npm i -g @openai/codex</code></span>
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Show guide toggle when dismissed */}
+      {!showGuide && (
+        <div className="flex justify-end">
+          <button onClick={enableGuide} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+            Show getting started guide
+          </button>
+        </div>
+      )}
+
       {/* Today summary card — shown when "Today" range is selected */}
       {rangePreset === 'today' && <TodaySummary stats={stats} />}
 
@@ -744,7 +809,9 @@ function SessionDetailPanel({ session, onClose }: { session: Session; onClose: (
   const [msgSearch, setMsgSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState<string>('all');
   const [panelWidth, setPanelWidth] = useState(672); // ~max-w-2xl
+  const [activeMatchIdx, setActiveMatchIdx] = useState(0);
   const panelRef = useRef<HTMLDivElement>(null);
+  const matchRefs = useRef<(HTMLElement | null)[]>([]);
   const isResizing = useRef(false);
 
   useEffect(() => {
@@ -804,6 +871,90 @@ function SessionDetailPanel({ session, onClose }: { session: Session; onClose: (
     return true;
   });
 
+  // Count total matches across all filtered messages for prev/next navigation
+  const matchPositions = useMemo(() => {
+    if (!msgSearch) return [];
+    const positions: { msgIdx: number; offset: number }[] = [];
+    const needle = msgSearch.toLowerCase();
+    filteredMessages.forEach((msg, mi) => {
+      let start = 0;
+      const hay = msg.text.toLowerCase();
+      while (true) {
+        const idx = hay.indexOf(needle, start);
+        if (idx === -1) break;
+        positions.push({ msgIdx: mi, offset: idx });
+        start = idx + 1;
+      }
+    });
+    return positions;
+  }, [filteredMessages, msgSearch]);
+
+  // Reset active match when search changes
+  useEffect(() => { setActiveMatchIdx(0); }, [msgSearch]);
+
+  // Scroll active match into view
+  useEffect(() => {
+    if (matchPositions.length > 0 && matchRefs.current[activeMatchIdx]) {
+      matchRefs.current[activeMatchIdx]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [activeMatchIdx, matchPositions.length]);
+
+  // Track which global match index a given message starts at
+  const msgMatchStart = useMemo(() => {
+    const starts: number[] = [];
+    let count = 0;
+    if (!msgSearch) return starts;
+    const needle = msgSearch.toLowerCase();
+    filteredMessages.forEach(msg => {
+      starts.push(count);
+      let s = 0;
+      const hay = msg.text.toLowerCase();
+      while (true) {
+        const idx = hay.indexOf(needle, s);
+        if (idx === -1) break;
+        count++;
+        s = idx + 1;
+      }
+    });
+    return starts;
+  }, [filteredMessages, msgSearch]);
+
+  matchRefs.current = [];
+
+  const highlightText = (text: string, globalStart: number) => {
+    if (!msgSearch) return <>{text}</>;
+    const needle = msgSearch.toLowerCase();
+    const parts: React.ReactNode[] = [];
+    let last = 0;
+    let localMatch = 0;
+    const hay = text.toLowerCase();
+    while (true) {
+      const idx = hay.indexOf(needle, last);
+      if (idx === -1) break;
+      if (idx > last) parts.push(text.slice(last, idx));
+      const gIdx = globalStart + localMatch;
+      const isActive = gIdx === activeMatchIdx;
+      parts.push(
+        <mark
+          key={`${idx}-${localMatch}`}
+          ref={el => { matchRefs.current[gIdx] = el; }}
+          className={isActive ? 'bg-yellow-400 text-black rounded-sm px-0.5' : 'bg-yellow-200/60 dark:bg-yellow-700/40 rounded-sm px-0.5'}
+        >
+          {text.slice(idx, idx + msgSearch.length)}
+        </mark>
+      );
+      last = idx + msgSearch.length;
+      localMatch++;
+    }
+    if (last < text.length) parts.push(text.slice(last));
+    return <>{parts}</>;
+  };
+
+  const goToMatch = (dir: 1 | -1) => {
+    if (matchPositions.length === 0) return;
+    setActiveMatchIdx(prev => (prev + dir + matchPositions.length) % matchPositions.length);
+  };
+
   return (
     <>
     {/* Backdrop */}
@@ -848,12 +999,32 @@ function SessionDetailPanel({ session, onClose }: { session: Session; onClose: (
           <>
             {/* Search & filter for conversation */}
             <div className="flex items-center gap-2 mb-3 sticky top-[73px] bg-background py-2 z-10">
-              <input
-                className="border rounded px-3 py-1.5 text-sm flex-1 bg-background"
-                placeholder="Search messages..."
-                value={msgSearch}
-                onChange={e => setMsgSearch(e.target.value)}
-              />
+              <div className="relative flex-1">
+                <input
+                  className="border rounded px-3 py-1.5 text-sm w-full bg-background pr-20"
+                  placeholder="Search messages..."
+                  value={msgSearch}
+                  onChange={e => setMsgSearch(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && matchPositions.length > 0) {
+                      goToMatch(e.shiftKey ? -1 : 1);
+                      e.preventDefault();
+                    }
+                  }}
+                />
+                {msgSearch && matchPositions.length > 0 && (
+                  <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
+                    <span className="text-[10px] text-muted-foreground tabular-nums mr-1">
+                      {activeMatchIdx + 1}/{matchPositions.length}
+                    </span>
+                    <button onClick={() => goToMatch(-1)} className="text-muted-foreground hover:text-foreground p-0.5 text-xs" title="Previous match (Shift+Enter)">&#x25B2;</button>
+                    <button onClick={() => goToMatch(1)} className="text-muted-foreground hover:text-foreground p-0.5 text-xs" title="Next match (Enter)">&#x25BC;</button>
+                  </div>
+                )}
+                {msgSearch && matchPositions.length === 0 && (
+                  <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground">No matches</span>
+                )}
+              </div>
               <Select value={roleFilter} onValueChange={setRoleFilter}>
                 <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -879,7 +1050,7 @@ function SessionDetailPanel({ session, onClose }: { session: Session; onClose: (
                     {msg.toolName && <Badge variant="secondary" className="text-xs">{msg.toolName}</Badge>}
                     {msg.timestamp && <span className="text-xs text-muted-foreground ml-auto">{new Date(msg.timestamp).toLocaleTimeString()}</span>}
                   </div>
-                  <pre className="whitespace-pre-wrap text-xs font-mono break-all">{msg.text}</pre>
+                  <pre className="whitespace-pre-wrap text-xs font-mono break-all">{highlightText(msg.text, msgMatchStart[i] ?? 0)}</pre>
                 </div>
               ))}
               {filteredMessages.length === 0 && (
