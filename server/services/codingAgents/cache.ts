@@ -238,8 +238,11 @@ export class SessionCacheManager {
 
   /** Get all sessions (merged, sorted, _filePath stripped). */
   async getAllSessionsCached(): Promise<AgentSession[]> {
-    // Wait for warmup if still in progress
-    if (this.warmupPromise) await this.warmupPromise;
+    // Don't block on warmup — return what we have, warmup will populate cache
+    if (this.warmupPromise && this.mergedCache === null) {
+      // First request during warmup: return empty immediately, don't wait
+      return [];
+    }
 
     // Check if any reader cache has been refreshed since last merge
     let needsMerge = this.mergedCache === null;

@@ -9,6 +9,8 @@
  */
 
 import fs from 'fs/promises';
+import { createReadStream } from 'fs';
+import { createInterface } from 'readline';
 import path from 'path';
 import os from 'os';
 import type { CodingAgentReader, AgentSession, AgentStats, DailyActivity, SessionDetail, SessionMessage } from '../types';
@@ -43,14 +45,26 @@ async function listProjectJSONLFiles(slug: string): Promise<string[]> {
   }
 }
 
+async function readFirstLines(filePath: string, maxLines: number): Promise<string[]> {
+  const lines: string[] = [];
+  const rl = createInterface({
+    input: createReadStream(filePath, { encoding: 'utf-8' }),
+    crlfDelay: Infinity,
+  });
+  for await (const line of rl) {
+    if (line.trim()) lines.push(line);
+    if (lines.length >= maxLines) break;
+  }
+  rl.close();
+  return lines;
+}
+
 async function resolveProjectPath(slug: string): Promise<string> {
   const files = await listProjectJSONLFiles(slug);
   for (const f of files) {
     try {
-      const raw = await fs.readFile(f, 'utf-8');
-      const lines = raw.split(/\r?\n/);
-      for (const line of lines.slice(0, 50)) {
-        if (!line.trim()) continue;
+      const lines = await readFirstLines(f, 50);
+      for (const line of lines) {
         try {
           const obj = JSON.parse(line);
           if (obj.cwd && typeof obj.cwd === 'string') return obj.cwd;
@@ -197,18 +211,41 @@ export class ClaudeCodeReader implements CodingAgentReader {
   }
 
   async getSessions(): Promise<AgentSession[]> {
-    const results: AgentSession[] = [];
     try {
       const slugs = await listProjectSlugs();
-      for (const slug of slugs) {
-        const projectPath = await resolveProjectPath(slug);
-        const files = await listProjectJSONLFiles(slug);
-        for (const filePath of files) {
-          const sessionId = path.basename(filePath, '.jsonl');
-          const meta = await deriveSessionMeta(filePath, sessionId, projectPath);
+
+      // Resolve all project paths in parallel
+      const slugData = await Promise.all(
+        slugs.map(async slug => ({
+          slug,
+          projectPath: await resolveProjectPath(slug),
+          files: await listProjectJSONLFiles(slug),
+        }))
+      );
+
+      // Parse all session files in parallel (batched to limit concurrency)
+      const BATCH_SIZE = 20;
+      const results: AgentSession[] = [];
+      const allTasks = slugData.flatMap(({ projectPath, files }) =>
+        files.map(filePath => ({
+          filePath,
+          sessionId: path.basename(filePath, '.jsonl'),
+          projectPath,
+        }))
+      );
+
+      for (let i = 0; i < allTasks.length; i += BATCH_SIZE) {
+        const batch = allTasks.slice(i, i + BATCH_SIZE);
+        const batchResults = await Promise.all(
+          batch.map(({ filePath, sessionId, projectPath }) =>
+            deriveSessionMeta(filePath, sessionId, projectPath)
+          )
+        );
+        for (const meta of batchResults) {
           if (meta) results.push(meta);
         }
       }
+
       return results.sort((a, b) => new Date(b.start_time).getTime() - new Date(a.start_time).getTime());
     } catch {
       return [];
