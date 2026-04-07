@@ -40,6 +40,7 @@ import { generateInsights } from './insights';
 import { ClaudeCodeReader } from './readers/claudeCode';
 import { KiroReader } from './readers/kiro';
 import { CodexReader } from './readers/codex';
+import { SessionCacheManager } from './cache';
 
 /** Format a Date as YYYY-MM-DD in local timezone (NOT UTC). */
 function localDateStr(d: Date): string {
@@ -119,6 +120,13 @@ class CodingAgentRegistry {
     new KiroReader(),
     new CodexReader(),
   ];
+  private cacheManager: SessionCacheManager;
+
+  constructor() {
+    this.cacheManager = new SessionCacheManager(this.readers);
+    this.cacheManager.warmup();
+    this.cacheManager.startBackgroundRefresh(30_000);
+  }
 
   /** Get all readers whose data directories exist on this machine */
   async getAvailableReaders(): Promise<CodingAgentReader[]> {
@@ -133,13 +141,11 @@ class CodingAgentRegistry {
     return this.readers.find(r => r.agentName === agent);
   }
 
-  /** Get all sessions from all available agents, optionally filtered by date range */
+  /** Get all sessions from all available agents, optionally filtered by date range.
+   *  Results are served from an in-memory cache that refreshes on directory changes
+   *  and periodically re-reads active sessions in the background. */
   async getAllSessions(range?: DateRange): Promise<AgentSession[]> {
-    const readers = await this.getAvailableReaders();
-    const allSessions = await Promise.all(readers.map(r => r.getSessions()));
-    const merged = allSessions.flat().sort((a, b) =>
-      new Date(b.start_time).getTime() - new Date(a.start_time).getTime()
-    );
+    const merged = await this.cacheManager.getAllSessionsCached();
     return filterByDate(merged, range);
   }
 

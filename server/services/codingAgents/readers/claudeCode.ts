@@ -179,6 +179,7 @@ async function deriveSessionMeta(
     estimated_cost: cost,
     uses_mcp: hasMcp,
     model: model || undefined,
+    _filePath: filePath,
   };
 }
 

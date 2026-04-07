@@ -31,6 +31,8 @@ export interface AgentSession {
   estimated_cost: number;
   uses_mcp: boolean;
   model?: string;
+  /** @internal Source file path, used by cache layer. Stripped from API responses. */
+  _filePath?: string;
 }
 
 export type AgentKind = 'claude-code' | 'kiro' | 'codex';

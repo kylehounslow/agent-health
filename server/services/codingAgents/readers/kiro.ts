@@ -230,6 +230,7 @@ async function deriveCliSession(filePath: string): Promise<AgentSession | null> 
     first_prompt: firstPrompt,
     estimated_cost: cost,
     uses_mcp: hasMcp,
+    _filePath: filePath,
   };
 }
 
@@ -339,6 +340,7 @@ async function deriveIdeSession(
     estimated_cost: 0,
     uses_mcp: false,
     model: model || (sessionType ? `kiro-ide (${sessionType})` : undefined),
+    _filePath: filePath,
   };
 }
 

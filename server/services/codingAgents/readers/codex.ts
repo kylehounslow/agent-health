@@ -141,6 +141,7 @@ async function deriveSessionFromRollout(filePath: string): Promise<AgentSession 
     estimated_cost: 0,
     uses_mcp: false,
     model: model || undefined,
+    _filePath: filePath,
   };
 }
 
