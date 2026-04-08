@@ -333,6 +333,13 @@ export class SessionCacheManager {
     return this.mergedCache!;
   }
 
+  /** Whether background data loading is still in progress. */
+  isBackfilling(): boolean {
+    return this.backfillInProgress;
+  }
+
+  private backfillInProgress = false;
+
   /** Start async warmup. Fast pass resolves quickly for immediate serving. */
   warmup(): void {
     this.fastPassDone = this._doWarmup();
@@ -346,21 +353,24 @@ export class SessionCacheManager {
   private fastPassDone: Promise<void> | null = null;
 
   private async _doWarmup(): Promise<void> {
-    // Phase 1: fast pass — only sessions from the last 7 days
-    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    // Phase 1: today only — sub-second
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
     try {
       await Promise.all(
-        [...this.readerCaches.values()].map(rc => rc.fastRefresh(sevenDaysAgo))
+        [...this.readerCaches.values()].map(rc => rc.fastRefresh(todayStart.getTime()))
       );
-      // Merge immediately so "Today" queries work
       this.invalidateMergedCache();
     } catch { /* non-fatal */ }
-    this.warmupPromise = null; // fast pass done — stop returning empty
+    this.warmupPromise = null; // fast pass done
 
-    // Phase 2: full backfill in background (non-blocking)
+    // Phase 2: full backfill in background
+    this.backfillInProgress = true;
     Promise.all(
       [...this.readerCaches.values()].map(rc => rc.fullRefresh())
-    ).catch(() => {});
+    ).catch(() => {}).finally(() => {
+      this.backfillInProgress = false;
+    });
   }
 
   /** Force merged cache to rebuild on next access. */

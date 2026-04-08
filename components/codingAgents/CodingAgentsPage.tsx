@@ -68,6 +68,7 @@ interface CombinedStats {
   wastedCost: number;
   abandonedSessions: number;
   insights: Insight[];
+  warming?: boolean;
 }
 interface Session {
   agent: string;
@@ -2728,10 +2729,9 @@ export const CodingAgentsPage: React.FC = () => {
           setError('No coding agents detected. Install Claude Code, Kiro, or Codex CLI to see analytics.');
         }
 
-        // Auto-retry if server is still warming up (0 sessions but agents detected)
-        if (statsData.totalSessions === 0 && agentData.agents.length > 0 && !cancelled) {
-          retryTimer = setTimeout(() => { if (!cancelled) load(); }, 3000);
-          return; // keep loading state
+        // Auto-refresh while server is still loading historical data
+        if (statsData.warming && !cancelled) {
+          retryTimer = setTimeout(() => { if (!cancelled) load(); }, 5000);
         }
       } catch (e: any) {
         if (!cancelled) setError(e.message);
@@ -2838,6 +2838,13 @@ export const CodingAgentsPage: React.FC = () => {
           </Select>
         </div>
       </div>
+
+      {stats?.warming && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground px-1">
+          <RefreshCw size={12} className="animate-spin" />
+          <span>Loading historical data…</span>
+        </div>
+      )}
 
       {error && agents.length === 0 ? (
         <Card>

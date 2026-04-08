@@ -133,6 +133,11 @@ export class CodingAgentRegistry {
     await this.cacheManager.waitForFastPass();
   }
 
+  /** Whether historical data is still loading in the background. */
+  isBackfilling(): boolean {
+    return this.cacheManager.isBackfilling();
+  }
+
   /** Stop background refresh timers (for graceful shutdown). */
   stopBackgroundRefresh(): void {
     this.cacheManager.stopBackgroundRefresh();
