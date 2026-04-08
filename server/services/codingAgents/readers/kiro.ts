@@ -501,25 +501,44 @@ async function listCliDbSessionsViaShell(sinceMs?: number): Promise<AgentSession
 
     const results = [...smallResults];
 
-    // Also include large rows with just basic metadata (no json_extract)
+    // Also include large rows — query metadata individually to avoid OOM on batch json_extract
     try {
-      const largeRaw = await sqlite3Json(
+      const largeIndexRaw = await sqlite3Json(
         KIRO_CLI_DB,
-        'SELECT key, conversation_id, created_at, updated_at FROM conversations_v2 WHERE length(value) >= 10000000 ORDER BY updated_at DESC',
+        'SELECT key, conversation_id, created_at, updated_at, length(value) as val_len FROM conversations_v2 WHERE length(value) >= 10000000 ORDER BY updated_at DESC',
         5 * 1024 * 1024,
       );
-      const largeRows: Array<{ key: string; conversation_id: string; created_at: number; updated_at: number }> = JSON.parse(largeRaw);
+      const largeRows: Array<{ key: string; conversation_id: string; created_at: number; updated_at: number; val_len: number }> = JSON.parse(largeIndexRaw);
       for (const row of largeRows) {
         const startTime = new Date(row.created_at).toISOString();
         const durationMs = row.updated_at - row.created_at;
+        let historyLen = 0;
+        let firstPrompt = '(large session)';
+
+        // Try to extract just array length + first prompt (fast for <100MB, may OOM for larger)
+        if (row.val_len < 100_000_000) {
+          try {
+            const detailRaw = await sqlite3Json(
+              KIRO_CLI_DB,
+              "SELECT json_array_length(value, '$.history') as h, json_extract(value, '$.history[0].user.content.Prompt.prompt') as p FROM conversations_v2 WHERE conversation_id='" + row.conversation_id.replace(/'/g, "''") + "' AND key='" + row.key.replace(/'/g, "''") + "' LIMIT 1",
+              5 * 1024 * 1024,
+            );
+            const detail = JSON.parse(detailRaw);
+            if (detail[0]) {
+              historyLen = detail[0].h ?? 0;
+              if (detail[0].p) firstPrompt = detail[0].p;
+            }
+          } catch { /* OOM or timeout — keep defaults */ }
+        }
+
         results.push({
           agent: 'kiro',
           session_id: row.conversation_id,
           project_path: row.key,
           start_time: startTime,
           duration_minutes: durationMs / 60_000,
-          user_message_count: 0,
-          assistant_message_count: 0,
+          user_message_count: historyLen,
+          assistant_message_count: historyLen,
           tool_counts: {},
           tool_error_counts: {},
           total_tool_errors: 0,
@@ -528,7 +547,7 @@ async function listCliDbSessionsViaShell(sinceMs?: number): Promise<AgentSession
           output_tokens: 0,
           cache_creation_input_tokens: 0,
           cache_read_input_tokens: 0,
-          first_prompt: '(large session)',
+          first_prompt: firstPrompt?.slice(0, 500) ?? '(large session)',
           estimated_cost: 0,
           uses_mcp: false,
           model: 'kiro-cli',
