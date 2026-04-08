@@ -73,6 +73,8 @@ const CLAUDE_PROJECTS = path.join(os.homedir(), '.claude', 'projects');
 const KIRO_CLI = path.join(os.homedir(), '.kiro', 'sessions', 'cli');
 const CODEX_SESSIONS = path.join(os.homedir(), '.codex', 'sessions');
 
+import { kiroCliDataDir } from './readers/kiro';
+
 function kiroIdePath(): string {
   if (process.platform === 'darwin') {
     return path.join(os.homedir(), 'Library', 'Application Support', 'Kiro', 'User', 'globalStorage', 'kiro.kiroagent', 'workspace-sessions');
@@ -82,14 +84,9 @@ function kiroIdePath(): string {
   return path.join(os.homedir(), '.config', 'Kiro', 'User', 'globalStorage', 'kiro.kiroagent', 'workspace-sessions');
 }
 
-/** Base Kiro IDE globalStorage dir (parent of workspace-sessions and hash dirs). */
 function kiroIdeBasePath(): string {
-  if (process.platform === 'darwin') {
-    return path.join(os.homedir(), 'Library', 'Application Support', 'Kiro', 'User', 'globalStorage', 'kiro.kiroagent');
-  } else if (process.platform === 'win32') {
-    return path.join(os.homedir(), 'AppData', 'Roaming', 'Kiro', 'User', 'globalStorage', 'kiro.kiroagent');
-  }
-  return path.join(os.homedir(), '.config', 'Kiro', 'User', 'globalStorage', 'kiro.kiroagent');
+  // Parent of workspace-sessions — strip the last segment
+  return path.dirname(kiroIdePath());
 }
 
 /** Compute signature across all hash-based .chat workspace dirs. */
@@ -124,11 +121,7 @@ const DIR_SIGNATURE_FNS: Record<AgentKind, () => Promise<string>> = {
       dirSignature(kiroIdePath(), () => true, true),
       kiroChatDirSignature(),
       dirSignature(
-        path.join(os.homedir(), os.platform() === 'darwin'
-          ? 'Library/Application Support/kiro-cli'
-          : os.platform() === 'win32'
-            ? 'AppData/Roaming/kiro-cli'
-            : '.local/share/kiro-cli'),
+        kiroCliDataDir(),
         f => f === 'data.sqlite3',
         false,
       ),

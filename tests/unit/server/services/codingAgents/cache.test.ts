@@ -16,6 +16,7 @@ jest.mock('fs/promises', () => ({
 // Mock os for homedir
 jest.mock('os', () => ({
   homedir: () => '/mock/home',
+  platform: () => 'darwin',
 }));
 
 import { ReaderCache, SessionCacheManager } from '@/server/services/codingAgents/cache';

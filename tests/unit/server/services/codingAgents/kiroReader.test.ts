@@ -24,9 +24,9 @@ jest.mock('fs/promises', () => ({
   stat: (...args: any[]) => mockStat(...args),
 }));
 
-const mockExecSync = jest.fn();
+const mockExecFileSync = jest.fn();
 jest.mock('child_process', () => ({
-  execSync: (...args: any[]) => mockExecSync(...args),
+  execFileSync: (...args: any[]) => mockExecFileSync(...args),
 }));
 
 jest.mock('os', () => ({
@@ -133,7 +133,7 @@ beforeEach(() => {
   mockAccess.mockRejectedValue(new Error('ENOENT'));
   mockReaddir.mockResolvedValue([]);
   mockReadFile.mockRejectedValue(new Error('ENOENT'));
-  mockExecSync.mockReturnValue('[]');
+  mockExecFileSync.mockReturnValue('[]');
 });
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -328,7 +328,7 @@ describe('KiroReader', () => {
     });
 
     it('parses sessions from SQLite via json_extract', async () => {
-      mockExecSync.mockImplementation((cmd: string) => {
+      mockExecFileSync.mockImplementation((_bin: string, args: string[]) => { const cmd = (args || []).join(' ');
         if (cmd.includes('json_extract') && cmd.includes('model_id')) {
           return makeSqliteMetaRows();
         }
@@ -357,7 +357,7 @@ describe('KiroReader', () => {
       mockAccess.mockImplementation((p: string) =>
         p === CLI_DB ? Promise.resolve() : Promise.reject(new Error('ENOENT'))
       );
-      mockExecSync.mockImplementation((cmd: string) => {
+      mockExecFileSync.mockImplementation((_bin: string, args: string[]) => { const cmd = (args || []).join(' ');
         if (cmd.includes('length(value) >= 10000000')) {
           return JSON.stringify([{
             key: '/mock/big-project',
@@ -386,7 +386,7 @@ describe('KiroReader', () => {
     });
 
     it('returns empty when sqlite3 command fails', async () => {
-      mockExecSync.mockImplementation(() => { throw new Error('sqlite3 not found'); });
+      mockExecFileSync.mockImplementation(() => { throw new Error('sqlite3 not found'); });
       mockReaddir.mockResolvedValue([]);
       const sessions = await reader.getSessions();
       expect(sessions).toHaveLength(0);
@@ -419,7 +419,7 @@ describe('KiroReader', () => {
       mockAccess.mockImplementation((p: string) =>
         p === CLI_DB ? Promise.resolve() : Promise.reject(new Error('ENOENT'))
       );
-      mockExecSync.mockImplementation((cmd: string) => {
+      mockExecFileSync.mockImplementation((_bin: string, args: string[]) => { const cmd = (args || []).join(' ');
         if (cmd.includes('model_id')) {
           return makeSqliteMetaRows([{
             key: '/mock/project', conversation_id: 'dup-id',
@@ -443,13 +443,36 @@ describe('KiroReader', () => {
   });
 
   describe('getSessionDetail — SQLite', () => {
+    it('escapes single quotes in sessionId to prevent SQL injection', async () => {
+      mockAccess.mockImplementation((p: string) =>
+        p === CLI_DB ? Promise.resolve() : Promise.reject(new Error('ENOENT'))
+      );
+      mockReaddir.mockResolvedValue([]);
+      mockExecFileSync.mockReturnValue('[]');
+
+      await reader.getSessionDetail("'; DROP TABLE conversations_v2; --");
+
+      // execFileSync is called with args array, not shell string — inherently safe
+      // But also verify the SQL escaping in the query arg
+      const calls = mockExecFileSync.mock.calls;
+      const sqlCall = calls.find(([bin, args]: [string, string[]]) =>
+        bin === 'sqlite3' && args?.some((a: string) => a.includes('conversation_id'))
+      );
+      expect(sqlCall).toBeDefined();
+      const query = sqlCall![1][2]; // args[2] is the SQL query
+      // Single quote in input is escaped to '' (SQL standard escaping)
+      // Plus execFileSync passes as argument array, not shell string — no shell injection
+      expect(query).toContain("conversation_id='''");
+      expect(query).toMatch(/conversation_id='.*DROP TABLE.*'/);
+    });
+
     it('returns session detail from SQLite for kiro-cli sessions', async () => {
       mockAccess.mockImplementation((p: string) =>
         p === CLI_DB ? Promise.resolve() : Promise.reject(new Error('ENOENT'))
       );
       mockReaddir.mockResolvedValue([]);
 
-      mockExecSync.mockImplementation((cmd: string) => {
+      mockExecFileSync.mockImplementation((_bin: string, args: string[]) => { const cmd = (args || []).join(' ');
         if (cmd.includes("conversation_id='conv-001'")) {
           return JSON.stringify([{
             key: '/mock/project',
@@ -485,7 +508,7 @@ describe('KiroReader', () => {
         p === CLI_DB ? Promise.resolve() : Promise.reject(new Error('ENOENT'))
       );
       mockReaddir.mockResolvedValue([]);
-      mockExecSync.mockReturnValue('[]');
+      mockExecFileSync.mockReturnValue('[]');
 
       const detail = await reader.getSessionDetail('nonexistent');
       expect(detail).toBeNull();
@@ -511,19 +534,19 @@ describe('KiroReader', () => {
           ]);
         }
         if (dir.includes('workspace-sessions') && opts?.withFileTypes) return Promise.resolve([]);
-        // First dir has no match, second dir has the target
-        if (dir.includes('aaa111')) return Promise.resolve(['other.chat', 'f62de366d0006e17ea00a01f6624aabf']);
-        if (dir.includes('bbb111')) return Promise.resolve(['target.chat', 'f62de366d0006e17ea00a01f6624aabf']);
+        // Both dirs have an index file and .chat files
+        if (dir.includes('aaa111')) return Promise.resolve(['other.chat', 'exec_index']);
+        if (dir.includes('bbb111')) return Promise.resolve(['target.chat', 'exec_index']);
         return Promise.resolve([]);
       });
 
       mockReadFile.mockImplementation((p: string) => {
         // Execution index for dir aaa — no match
-        if (p.includes('aaa111') && p.includes('f62de366')) {
+        if (p.includes('aaa111') && p.endsWith('exec_index')) {
           return Promise.resolve(JSON.stringify({ executions: [], version: '2.0.0' }));
         }
         // Execution index for dir bbb — has our target
-        if (p.includes('bbb111') && p.includes('f62de366')) {
+        if (p.includes('bbb111') && p.endsWith('exec_index')) {
           return Promise.resolve(executionIndex);
         }
         // The .chat file
@@ -553,7 +576,7 @@ describe('KiroReader', () => {
         p === CLI_DB ? Promise.resolve() : Promise.reject(new Error('ENOENT'))
       );
       mockReaddir.mockResolvedValue([]);
-      mockExecSync.mockImplementation((cmd: string) => {
+      mockExecFileSync.mockImplementation((_bin: string, args: string[]) => { const cmd = (args || []).join(' ');
         if (cmd.includes('model_id')) {
           return makeSqliteMetaRows([
             { key: '/p1', conversation_id: 'c1', created_at: 1700000000000, updated_at: 1700000060000, model_id: 'opus', conv_id: 'c1', history_len: 3, transcript_len: 4 },

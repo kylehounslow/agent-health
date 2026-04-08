@@ -19,7 +19,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import type { CodingAgentReader, AgentSession, AgentStats, DailyActivity, SessionDetail, SessionMessage } from '../types';
 import { estimateCost } from '../pricing';
 
@@ -365,8 +365,17 @@ async function listIdeSessions(): Promise<AgentSession[]> {
 
 // ─── kiro-cli SQLite session parsing ─────────────────────────────────────────
 
+/** Run a sqlite3 query safely using execFileSync (no shell interpolation). */
+function sqlite3Json(dbPath: string, query: string, maxBuffer = 10 * 1024 * 1024): string {
+  return execFileSync('sqlite3', ['-json', dbPath, query], {
+    maxBuffer,
+    encoding: 'utf-8',
+    timeout: 30_000,
+  });
+}
+
 /** Platform-specific kiro-cli data directory */
-function kiroCliDataDir(): string {
+export function kiroCliDataDir(): string {
   const platform = os.platform();
   if (platform === 'darwin') {
     return path.join(os.homedir(), 'Library', 'Application Support', 'kiro-cli');
@@ -423,10 +432,7 @@ async function listCliDbSessionsViaShell(): Promise<AgentSession[]> {
       'ORDER BY updated_at DESC',
     ].join(' ');
 
-    const raw = execSync(
-      `sqlite3 -json "${KIRO_CLI_DB}" "${metaQuery}"`,
-      { maxBuffer: 10 * 1024 * 1024, encoding: 'utf-8' },
-    );
+    const raw = sqlite3Json(KIRO_CLI_DB, metaQuery);
     const rows: Array<{
       key: string; conversation_id: string; created_at: number; updated_at: number;
       model_id: string | null; conv_id: string | null; history_len: number; transcript_len: number;
@@ -442,10 +448,7 @@ async function listCliDbSessionsViaShell(): Promise<AgentSession[]> {
       'ORDER BY updated_at DESC',
     ].join(' ');
 
-    const promptRaw = execSync(
-      `sqlite3 -json "${KIRO_CLI_DB}" "${promptQuery}"`,
-      { maxBuffer: 20 * 1024 * 1024, encoding: 'utf-8' },
-    );
+    const promptRaw = sqlite3Json(KIRO_CLI_DB, promptQuery, 20 * 1024 * 1024);
     const promptRows: Array<{ conversation_id: string; key: string; first_prompt: string | null; usage_info: string | null }> = JSON.parse(promptRaw);
     const promptMap = new Map(promptRows.map(r => [`${r.key}|${r.conversation_id}`, r]));
 
@@ -496,9 +499,10 @@ async function listCliDbSessionsViaShell(): Promise<AgentSession[]> {
 
     // Also include large rows with just basic metadata (no json_extract)
     try {
-      const largeRaw = execSync(
-        'sqlite3 -json "' + KIRO_CLI_DB + '" "SELECT key, conversation_id, created_at, updated_at FROM conversations_v2 WHERE length(value) >= 10000000 ORDER BY updated_at DESC"',
-        { maxBuffer: 5 * 1024 * 1024, encoding: 'utf-8' },
+      const largeRaw = sqlite3Json(
+        KIRO_CLI_DB,
+        'SELECT key, conversation_id, created_at, updated_at FROM conversations_v2 WHERE length(value) >= 10000000 ORDER BY updated_at DESC',
+        5 * 1024 * 1024,
       );
       const largeRows: Array<{ key: string; conversation_id: string; created_at: number; updated_at: number }> = JSON.parse(largeRaw);
       for (const row of largeRows) {
@@ -637,10 +641,7 @@ async function getCliDbSessionDetail(sessionId: string): Promise<SessionDetail |
       "FROM conversations_v2 WHERE conversation_id='" + sessionId.replace(/'/g, "''") + "' LIMIT 1",
     ].join(' ');
 
-    const raw = execSync(
-      'sqlite3 -json "' + KIRO_CLI_DB + '" "' + query + '"',
-      { maxBuffer: 50 * 1024 * 1024, encoding: 'utf-8', timeout: 15_000 },
-    );
+    const raw = sqlite3Json(KIRO_CLI_DB, query, 20 * 1024 * 1024);
     const rows = JSON.parse(raw);
     if (!rows.length) return null;
 
@@ -704,6 +705,26 @@ async function getCliDbSessionDetail(sessionId: string): Promise<SessionDetail |
 }
 
 // ─── New .chat format parsing (hash-based workspace dirs) ────────────────────
+
+/**
+ * Find the execution index file in a workspace hash directory.
+ * The IDE stores it under a fixed content-addressable filename that may
+ * vary across IDE versions, so we detect it dynamically: it's the JSON
+ * file (not .chat) whose top-level object contains an "executions" array.
+ */
+async function findExecutionIndex(dir: string): Promise<AnyObj | null> {
+  const files = await fs.readdir(dir);
+  for (const f of files) {
+    if (f.endsWith('.chat')) continue;
+    const fp = path.join(dir, f);
+    try {
+      const raw = await fs.readFile(fp, 'utf-8');
+      const data = JSON.parse(raw);
+      if (Array.isArray(data?.executions)) return data;
+    } catch { /* not the index */ }
+  }
+  return null;
+}
 
 /**
  * List hash-based workspace directories that contain .chat files.
@@ -1090,15 +1111,16 @@ export class KiroReader implements CodingAgentReader {
     const chatDirs = await listChatWorkspaceDirs();
     for (const dir of chatDirs) {
       // Check execution index for this sessionId
-      const indexPath = path.join(dir, 'f62de366d0006e17ea00a01f6624aabf');
+      // Check execution index for this sessionId
+      let indexData: AnyObj | null;
       try {
-        const indexRaw = await fs.readFile(indexPath, 'utf-8');
-        const indexData: AnyObj = JSON.parse(indexRaw);
-        const match = (indexData.executions ?? []).find((e: AnyObj) => e.executionId === sessionId);
-        if (!match) continue;
+        indexData = await findExecutionIndex(dir);
       } catch {
         continue;
       }
+      if (!indexData) continue;
+      const match = (indexData.executions ?? []).find((e: AnyObj) => e.executionId === sessionId);
+      if (!match) continue;
 
       // Found the right dir — now scan only this dir's .chat files
       const files = await fs.readdir(dir);
