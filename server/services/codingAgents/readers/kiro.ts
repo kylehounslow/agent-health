@@ -449,7 +449,7 @@ async function listCliDbSessionsViaShell(): Promise<AgentSession[]> {
     const promptRows: Array<{ conversation_id: string; key: string; first_prompt: string | null; usage_info: string | null }> = JSON.parse(promptRaw);
     const promptMap = new Map(promptRows.map(r => [`${r.key}|${r.conversation_id}`, r]));
 
-    return rows.map(row => {
+    const smallResults = rows.map(row => {
       if (!row.history_len || row.history_len === 0) return null;
 
       const pk = `${row.key}|${row.conversation_id}`;
@@ -491,6 +491,8 @@ async function listCliDbSessionsViaShell(): Promise<AgentSession[]> {
         _filePath: KIRO_CLI_DB,
       } as AgentSession;
     }).filter((s): s is AgentSession => s !== null);
+
+    const results = [...smallResults];
 
     // Also include large rows with just basic metadata (no json_extract)
     try {
@@ -775,13 +777,11 @@ async function deriveChatSession(filePath: string): Promise<AgentSession | null>
     const content = msg.content;
 
     if (role === 'human') {
-      userCount++;
       lastRole = 'human';
+      if (typeof content === 'string' && content.startsWith('<identity>')) continue;
+      userCount++;
       if (!firstPrompt && typeof content === 'string') {
-        // Skip system prompts (identity blocks)
-        if (!content.startsWith('<identity>')) {
-          firstPrompt = content.slice(0, 500);
-        }
+        firstPrompt = content.slice(0, 500);
       }
     }
 
