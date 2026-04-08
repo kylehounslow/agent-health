@@ -171,9 +171,18 @@ describe('ReaderCache', () => {
       const realDateNow = Date.now;
       jest.spyOn(Date, 'now').mockReturnValue(realDateNow() + 6000);
 
+      // With non-blocking refresh, stale data is returned immediately
       const result2 = await cache.getSessions();
+      expect(result2).toHaveLength(1); // stale data returned instantly
+
+      // Background refresh fires asynchronously
+      await new Promise(r => setTimeout(r, 50));
       expect(reader.getSessions).toHaveBeenCalledTimes(2);
-      expect(result2).toHaveLength(2);
+
+      // Next call returns updated data
+      jest.spyOn(Date, 'now').mockReturnValue(realDateNow() + 7000);
+      const result3 = await cache.getSessions();
+      expect(result3).toHaveLength(2);
 
       jest.spyOn(Date, 'now').mockRestore();
     });

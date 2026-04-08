@@ -149,33 +149,39 @@ export class ReaderCache {
   /** Return cached sessions, refreshing if directory signature changed.
    *  Skips signature check if within TTL window to avoid blocking the event loop. */
   async getSessions(): Promise<AgentSession[]> {
-    // If a refresh is in progress, wait for it
+    // Never block on a refresh — always return what we have
+    if (this.sessions.length > 0) {
+      // Trigger background refresh if signature is stale, but don't wait
+      if ((Date.now() - this.lastSignatureCheck) >= SIGNATURE_TTL_MS) {
+        this.maybeRefreshInBackground();
+      }
+      return this.sessions;
+    }
+
+    // No cached data yet — if a refresh is in progress, wait for it
     if (this.refreshLock) {
       await this.refreshLock;
       return this.sessions;
     }
 
-    // If we have cached data and the signature was checked recently, return immediately
-    if (this.sessions.length > 0 && (Date.now() - this.lastSignatureCheck) < SIGNATURE_TTL_MS) {
-      return this.sessions;
-    }
-
-    const sigFn = DIR_SIGNATURE_FNS[this.reader.agentName];
-    if (!sigFn) return this.reader.getSessions();
-
-    try {
-      const currentSig = await sigFn();
-      this.lastSignatureCheck = Date.now();
-      if (currentSig !== this.signature || this.sessions.length === 0) {
-        await this.fullRefresh();
-      }
-    } catch {
-      // If signature check fails, use cache if available
-      if (this.sessions.length === 0) {
-        await this.fullRefresh();
-      }
-    }
+    // First load — must refresh
+    await this.fullRefresh();
     return this.sessions;
+  }
+
+  /** Trigger a background refresh if signature changed. Non-blocking. */
+  private maybeRefreshInBackground(): void {
+    if (this.refreshLock) return; // already refreshing
+    const sigFn = DIR_SIGNATURE_FNS[this.reader.agentName];
+    if (!sigFn) return;
+
+    // Fire and forget
+    sigFn().then(currentSig => {
+      this.lastSignatureCheck = Date.now();
+      if (currentSig !== this.signature) {
+        this.fullRefresh().catch(() => {});
+      }
+    }).catch(() => {});
   }
 
   /** Full refresh: re-read all sessions from disk. */
