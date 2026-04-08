@@ -82,14 +82,58 @@ function kiroIdePath(): string {
   return path.join(os.homedir(), '.config', 'Kiro', 'User', 'globalStorage', 'kiro.kiroagent', 'workspace-sessions');
 }
 
+/** Base Kiro IDE globalStorage dir (parent of workspace-sessions and hash dirs). */
+function kiroIdeBasePath(): string {
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'Kiro', 'User', 'globalStorage', 'kiro.kiroagent');
+  } else if (process.platform === 'win32') {
+    return path.join(os.homedir(), 'AppData', 'Roaming', 'Kiro', 'User', 'globalStorage', 'kiro.kiroagent');
+  }
+  return path.join(os.homedir(), '.config', 'Kiro', 'User', 'globalStorage', 'kiro.kiroagent');
+}
+
+/** Compute signature across all hash-based .chat workspace dirs. */
+async function kiroChatDirSignature(): Promise<string> {
+  const baseDir = kiroIdeBasePath();
+  let fileCount = 0;
+  let latestMtime = 0;
+  try {
+    const entries = await fs.readdir(baseDir, { withFileTypes: true });
+    for (const e of entries) {
+      if (!e.isDirectory() || !/^[0-9a-f]{32}$/.test(e.name)) continue;
+      const dp = path.join(baseDir, e.name);
+      const files = await fs.readdir(dp);
+      for (const f of files) {
+        if (!f.endsWith('.chat')) continue;
+        fileCount++;
+        try {
+          const stat = await fs.stat(path.join(dp, f));
+          if (stat.mtimeMs > latestMtime) latestMtime = stat.mtimeMs;
+        } catch { /* skip */ }
+      }
+    }
+  } catch { /* dir doesn't exist */ }
+  return `${Math.floor(latestMtime)}:${fileCount}`;
+}
+
 const DIR_SIGNATURE_FNS: Record<AgentKind, () => Promise<string>> = {
   'claude-code': () => dirSignature(CLAUDE_PROJECTS, f => f.endsWith('.jsonl'), false),
   'kiro': async () => {
-    const [cliSig, ideSig] = await Promise.all([
+    const [cliSig, ideSig, chatSig, dbSig] = await Promise.all([
       dirSignature(KIRO_CLI, f => f.endsWith('.jsonl'), false),
       dirSignature(kiroIdePath(), () => true, true),
+      kiroChatDirSignature(),
+      dirSignature(
+        path.join(os.homedir(), os.platform() === 'darwin'
+          ? 'Library/Application Support/kiro-cli'
+          : os.platform() === 'win32'
+            ? 'AppData/Roaming/kiro-cli'
+            : '.local/share/kiro-cli'),
+        f => f === 'data.sqlite3',
+        false,
+      ),
     ]);
-    return `${cliSig}|${ideSig}`;
+    return `${cliSig}|${ideSig}|${chatSig}|${dbSig}`;
   },
   'codex': () => dirSignature(CODEX_SESSIONS, f => f.startsWith('rollout-') && f.endsWith('.jsonl'), true),
 };
