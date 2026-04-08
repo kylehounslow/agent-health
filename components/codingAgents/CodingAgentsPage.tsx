@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { ENV_CONFIG } from '@/lib/config';
+import { RefreshCw } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, Cell, PieChart, Pie,
@@ -12,6 +13,7 @@ import {
 } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -2806,6 +2808,15 @@ export const CodingAgentsPage: React.FC = () => {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={() => { setRefreshKey(k => k + 1); }}
+            disabled={loading}
+            title="Refresh data"
+          >
+            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+          </Button>
           <Select value={rangePreset} onValueChange={(v) => handleRangeChange(v as DateRangePreset)}>
             <SelectTrigger className="w-40">
               <SelectValue />
@@ -2816,14 +2827,6 @@ export const CodingAgentsPage: React.FC = () => {
               ))}
             </SelectContent>
           </Select>
-          <button
-            onClick={() => { setRefreshKey(k => k + 1); }}
-            disabled={loading}
-            className="inline-flex items-center justify-center h-10 w-10 rounded-md border border-input bg-background hover:bg-accent hover:text-accent-foreground transition-colors disabled:opacity-50"
-            title="Refresh data"
-          >
-            <span className={loading ? 'animate-spin' : ''}>↻</span>
-          </button>
           <Select onValueChange={(v) => handleExport(v as 'json' | 'csv')}>
             <SelectTrigger className="w-28">
               <SelectValue placeholder="Export" />
