@@ -393,7 +393,8 @@ export function kiroCliDataDir(): string {
 const KIRO_CLI_DB = path.join(kiroCliDataDir(), 'data.sqlite3');
 
 async function listCliDbSessions(sinceMs?: number): Promise<AgentSession[]> {
-  let Database: typeof import('better-sqlite3');
+  // better-sqlite3 is an optional dependency — skip if not installed
+  let Database: any;
   try {
     Database = require('better-sqlite3');
   } catch {

@@ -2668,6 +2668,7 @@ export const CodingAgentsPage: React.FC = () => {
   });
   const [error, setError] = useState<string | null>(null);
   const [rangePreset, setRangePreset] = useState<DateRangePreset>('today');
+  const [refreshKey, setRefreshKey] = useState(0);
   const [sessionProjectFilter, setSessionProjectFilter] = useState<string | undefined>();
   const [sessionAgentFilter, setSessionAgentFilter] = useState<string | undefined>();
 
@@ -2707,6 +2708,9 @@ export const CodingAgentsPage: React.FC = () => {
   };
 
   useEffect(() => {
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+
     const load = async () => {
       try {
         setLoading(true);
@@ -2714,20 +2718,29 @@ export const CodingAgentsPage: React.FC = () => {
           fetchJson<{ agents: AgentInfo[] }>('/api/coding-agents/available'),
           fetchJson<CombinedStats>(buildQuery('/api/coding-agents/stats', range)),
         ]);
+        if (cancelled) return;
         setAgents(agentData.agents);
         setStats(statsData);
 
         if (agentData.agents.length === 0) {
           setError('No coding agents detected. Install Claude Code, Kiro, or Codex CLI to see analytics.');
         }
+
+        // Auto-retry if server is still warming up (0 sessions but agents detected)
+        if (statsData.totalSessions === 0 && agentData.agents.length > 0 && !cancelled) {
+          retryTimer = setTimeout(() => { if (!cancelled) load(); }, 3000);
+          return; // keep loading state
+        }
       } catch (e: any) {
-        setError(e.message);
+        if (!cancelled) setError(e.message);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
     load();
-  }, [rangePreset]);
+
+    return () => { cancelled = true; if (retryTimer) clearTimeout(retryTimer); };
+  }, [rangePreset, refreshKey]);
 
   // Lazy-load tab data
   useEffect(() => {
@@ -2803,6 +2816,14 @@ export const CodingAgentsPage: React.FC = () => {
               ))}
             </SelectContent>
           </Select>
+          <button
+            onClick={() => { setRefreshKey(k => k + 1); }}
+            disabled={loading}
+            className="inline-flex items-center justify-center h-10 w-10 rounded-md border border-input bg-background hover:bg-accent hover:text-accent-foreground transition-colors disabled:opacity-50"
+            title="Refresh data"
+          >
+            <span className={loading ? 'animate-spin' : ''}>↻</span>
+          </button>
           <Select onValueChange={(v) => handleExport(v as 'json' | 'csv')}>
             <SelectTrigger className="w-28">
               <SelectValue placeholder="Export" />

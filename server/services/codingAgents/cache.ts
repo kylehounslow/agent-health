@@ -203,7 +203,7 @@ export class ReaderCache {
         for (const s of recent) {
           if (!existing.has(s.session_id)) this.sessions.push(s);
         }
-        this.lastRefreshTime = Date.now();
+        this.lastFullRefresh = Date.now();
       }
     } catch { /* non-fatal — full refresh will follow */ }
   }
