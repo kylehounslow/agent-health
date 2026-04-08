@@ -193,6 +193,21 @@ export class ReaderCache {
     }
   }
 
+  /** Fast refresh: only load sessions modified since `sinceMs`. */
+  async fastRefresh(sinceMs: number): Promise<void> {
+    try {
+      const recent = await this.reader.getSessions(sinceMs);
+      if (recent.length > 0) {
+        // Merge with any existing sessions (avoid duplicates)
+        const existing = new Set(this.sessions.map(s => s.session_id));
+        for (const s of recent) {
+          if (!existing.has(s.session_id)) this.sessions.push(s);
+        }
+        this.lastRefreshTime = Date.now();
+      }
+    } catch { /* non-fatal — full refresh will follow */ }
+  }
+
   private async _doFullRefresh(): Promise<void> {
     try {
       this.sessions = await this.reader.getSessions();
@@ -287,11 +302,6 @@ export class SessionCacheManager {
 
   /** Get all sessions (merged, sorted, _filePath stripped). */
   async getAllSessionsCached(): Promise<AgentSession[]> {
-    // Don't block on warmup — return what we have, warmup will populate cache
-    if (this.warmupPromise && this.mergedCache === null) {
-      // First request during warmup: return empty immediately, don't wait
-      return [];
-    }
 
     // Check if any reader cache has been refreshed since last merge
     let needsMerge = this.mergedCache === null;
@@ -317,18 +327,35 @@ export class SessionCacheManager {
     return this.mergedCache!;
   }
 
-  /** Start async warmup (non-blocking). */
+  /** Start async warmup (non-blocking). Fast pass loads recent sessions first. */
   warmup(): void {
     this.warmupPromise = this._doWarmup();
   }
 
   private async _doWarmup(): Promise<void> {
+    // Phase 1: fast pass — only sessions from the last 7 days
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    try {
+      await Promise.all(
+        [...this.readerCaches.values()].map(rc => rc.fastRefresh(sevenDaysAgo))
+      );
+      // Merge immediately so "Today" queries work
+      this.invalidateMergedCache();
+    } catch { /* non-fatal */ }
+
+    // Phase 2: full backfill in background
     try {
       await Promise.all(
         [...this.readerCaches.values()].map(rc => rc.fullRefresh())
       );
     } catch { /* non-fatal */ }
     this.warmupPromise = null;
+  }
+
+  /** Force merged cache to rebuild on next access. */
+  private invalidateMergedCache(): void {
+    this.mergedCache = null;
+    this.mergedAt = 0;
   }
 
   /** Start background refresh interval for active sessions. */

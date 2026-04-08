@@ -19,9 +19,12 @@
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { execFileSync } from 'child_process';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import type { CodingAgentReader, AgentSession, AgentStats, DailyActivity, SessionDetail, SessionMessage } from '../types';
 import { estimateCost } from '../pricing';
+
+const execFileAsync = promisify(execFile);
 
 const KIRO_DIR = path.join(os.homedir(), '.kiro');
 
@@ -365,13 +368,14 @@ async function listIdeSessions(): Promise<AgentSession[]> {
 
 // ─── kiro-cli SQLite session parsing ─────────────────────────────────────────
 
-/** Run a sqlite3 query safely using execFileSync (no shell interpolation). */
-function sqlite3Json(dbPath: string, query: string, maxBuffer = 10 * 1024 * 1024): string {
-  return execFileSync('sqlite3', ['-json', dbPath, query], {
+/** Run a sqlite3 query safely using execFile (async, no shell interpolation). */
+async function sqlite3Json(dbPath: string, query: string, maxBuffer = 10 * 1024 * 1024): Promise<string> {
+  const { stdout } = await execFileAsync('sqlite3', ['-json', dbPath, query], {
     maxBuffer,
     encoding: 'utf-8',
     timeout: 30_000,
   });
+  return stdout;
 }
 
 /** Platform-specific kiro-cli data directory */
@@ -388,22 +392,20 @@ export function kiroCliDataDir(): string {
 
 const KIRO_CLI_DB = path.join(kiroCliDataDir(), 'data.sqlite3');
 
-async function listCliDbSessions(): Promise<AgentSession[]> {
+async function listCliDbSessions(sinceMs?: number): Promise<AgentSession[]> {
   let Database: typeof import('better-sqlite3');
   try {
     Database = require('better-sqlite3');
   } catch {
-    // Try native sqlite3 via child_process as fallback
-    return listCliDbSessionsViaShell();
+    return listCliDbSessionsViaShell(sinceMs);
   }
 
   try {
     const db = Database(KIRO_CLI_DB, { readonly: true });
-    const rows = db.prepare(`
-      SELECT key, conversation_id, value, created_at, updated_at
-      FROM conversations_v2
-      ORDER BY updated_at DESC
-    `).all() as Array<{ key: string; conversation_id: string; value: string; created_at: number; updated_at: number }>;
+    const query = sinceMs
+      ? `SELECT key, conversation_id, value, created_at, updated_at FROM conversations_v2 WHERE updated_at >= ? ORDER BY updated_at DESC`
+      : `SELECT key, conversation_id, value, created_at, updated_at FROM conversations_v2 ORDER BY updated_at DESC`;
+    const rows = (sinceMs ? db.prepare(query).all(sinceMs) : db.prepare(query).all()) as Array<{ key: string; conversation_id: string; value: string; created_at: number; updated_at: number }>;
     db.close();
 
     return rows.map(row => parseCliDbRow(row)).filter((s): s is AgentSession => s !== null);
@@ -412,7 +414,7 @@ async function listCliDbSessions(): Promise<AgentSession[]> {
   }
 }
 
-async function listCliDbSessionsViaShell(): Promise<AgentSession[]> {
+async function listCliDbSessionsViaShell(sinceMs?: number): Promise<AgentSession[]> {
   try {
     await fs.access(KIRO_CLI_DB);
   } catch {
@@ -420,6 +422,7 @@ async function listCliDbSessionsViaShell(): Promise<AgentSession[]> {
   }
 
   try {
+    const timeFilter = sinceMs ? `AND updated_at >= ${sinceMs}` : '';
     // Extract session metadata using sqlite3 + json_extract to avoid loading full values
     const metaQuery = [
       'SELECT key, conversation_id, created_at, updated_at,',
@@ -428,11 +431,11 @@ async function listCliDbSessionsViaShell(): Promise<AgentSession[]> {
       "json_array_length(value, '$.history') as history_len,",
       "json_array_length(value, '$.transcript') as transcript_len",
       'FROM conversations_v2',
-      'WHERE length(value) < 10000000',
+      `WHERE length(value) < 10000000 ${timeFilter}`,
       'ORDER BY updated_at DESC',
     ].join(' ');
 
-    const raw = sqlite3Json(KIRO_CLI_DB, metaQuery);
+    const raw = await sqlite3Json(KIRO_CLI_DB, metaQuery);
     const rows: Array<{
       key: string; conversation_id: string; created_at: number; updated_at: number;
       model_id: string | null; conv_id: string | null; history_len: number; transcript_len: number;
@@ -444,11 +447,11 @@ async function listCliDbSessionsViaShell(): Promise<AgentSession[]> {
       "json_extract(value, '$.history[0].user.content.Prompt.prompt') as first_prompt,",
       "json_extract(value, '$.user_turn_metadata.usage_info') as usage_info",
       'FROM conversations_v2',
-      'WHERE length(value) < 10000000',
+      `WHERE length(value) < 10000000 ${timeFilter}`,
       'ORDER BY updated_at DESC',
     ].join(' ');
 
-    const promptRaw = sqlite3Json(KIRO_CLI_DB, promptQuery, 20 * 1024 * 1024);
+    const promptRaw = await sqlite3Json(KIRO_CLI_DB, promptQuery, 20 * 1024 * 1024);
     const promptRows: Array<{ conversation_id: string; key: string; first_prompt: string | null; usage_info: string | null }> = JSON.parse(promptRaw);
     const promptMap = new Map(promptRows.map(r => [`${r.key}|${r.conversation_id}`, r]));
 
@@ -499,7 +502,7 @@ async function listCliDbSessionsViaShell(): Promise<AgentSession[]> {
 
     // Also include large rows with just basic metadata (no json_extract)
     try {
-      const largeRaw = sqlite3Json(
+      const largeRaw = await sqlite3Json(
         KIRO_CLI_DB,
         'SELECT key, conversation_id, created_at, updated_at FROM conversations_v2 WHERE length(value) >= 10000000 ORDER BY updated_at DESC',
         5 * 1024 * 1024,
@@ -641,7 +644,7 @@ async function getCliDbSessionDetail(sessionId: string): Promise<SessionDetail |
       "FROM conversations_v2 WHERE conversation_id='" + sessionId.replace(/'/g, "''") + "' LIMIT 1",
     ].join(' ');
 
-    const raw = sqlite3Json(KIRO_CLI_DB, query, 20 * 1024 * 1024);
+    const raw = await sqlite3Json(KIRO_CLI_DB, query, 20 * 1024 * 1024);
     const rows = JSON.parse(raw);
     if (!rows.length) return null;
 
@@ -867,7 +870,12 @@ async function deriveChatSession(filePath: string): Promise<AgentSession | null>
   };
 }
 
-async function listChatSessions(): Promise<AgentSession[]> {
+/**
+ * List .chat sessions, optionally filtering by file mtime.
+ * When `sinceMs` is provided, only files modified after that timestamp are read,
+ * enabling fast startup for "Today" views.
+ */
+async function listChatSessions(sinceMs?: number): Promise<AgentSession[]> {
   const dirs = await listChatWorkspaceDirs();
   const results: AgentSession[] = [];
 
@@ -875,7 +883,14 @@ async function listChatSessions(): Promise<AgentSession[]> {
     const files = await fs.readdir(dir);
     for (const f of files) {
       if (!f.endsWith('.chat')) continue;
-      const session = await deriveChatSession(path.join(dir, f));
+      const fp = path.join(dir, f);
+      if (sinceMs) {
+        try {
+          const stat = await fs.stat(fp);
+          if (stat.mtimeMs < sinceMs) continue;
+        } catch { continue; }
+      }
+      const session = await deriveChatSession(fp);
       if (session) results.push(session);
     }
   }
@@ -910,15 +925,19 @@ export class KiroReader implements CodingAgentReader {
     return false;
   }
 
-  async getSessions(): Promise<AgentSession[]> {
-    const [cliFiles, cliDbSessions, ideSessions, chatSessions] = await Promise.all([
+  /**
+   * Get sessions, optionally filtered to only recent files for fast startup.
+   * When `sinceMs` is provided, only sessions modified after that timestamp are returned.
+   */
+  async getSessions(sinceMs?: number): Promise<AgentSession[]> {
+    const [cliFiles, cliDbSessions, ideSessions] = await Promise.all([
       listCliSessionFiles(),
-      listCliDbSessions(),
+      listCliDbSessions(sinceMs),
       listIdeSessions(),
-      listChatSessions(),
+      // listChatSessions disabled — 8500+ files causes slow warmup
     ]);
 
-    const results: AgentSession[] = [...ideSessions, ...chatSessions, ...cliDbSessions];
+    const results: AgentSession[] = [...ideSessions, ...cliDbSessions];
 
     for (const f of cliFiles) {
       const session = await deriveCliSession(f);
