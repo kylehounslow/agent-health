@@ -128,6 +128,11 @@ export class CodingAgentRegistry {
     this.cacheManager.startBackgroundRefresh(30_000);
   }
 
+  /** Wait for initial fast pass to complete so first requests have data. */
+  async waitForReady(): Promise<void> {
+    await this.cacheManager.waitForFastPass();
+  }
+
   /** Stop background refresh timers (for graceful shutdown). */
   stopBackgroundRefresh(): void {
     this.cacheManager.stopBackgroundRefresh();

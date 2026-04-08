@@ -333,10 +333,17 @@ export class SessionCacheManager {
     return this.mergedCache!;
   }
 
-  /** Start async warmup (non-blocking). Fast pass loads recent sessions first. */
+  /** Start async warmup. Fast pass resolves quickly for immediate serving. */
   warmup(): void {
-    this.warmupPromise = this._doWarmup();
+    this.fastPassDone = this._doWarmup();
   }
+
+  /** Wait for the fast pass to complete (call before serving first request). */
+  async waitForFastPass(): Promise<void> {
+    if (this.fastPassDone) await this.fastPassDone;
+  }
+
+  private fastPassDone: Promise<void> | null = null;
 
   private async _doWarmup(): Promise<void> {
     // Phase 1: fast pass — only sessions from the last 7 days
@@ -348,14 +355,12 @@ export class SessionCacheManager {
       // Merge immediately so "Today" queries work
       this.invalidateMergedCache();
     } catch { /* non-fatal */ }
+    this.warmupPromise = null; // fast pass done — stop returning empty
 
-    // Phase 2: full backfill in background
-    try {
-      await Promise.all(
-        [...this.readerCaches.values()].map(rc => rc.fullRefresh())
-      );
-    } catch { /* non-fatal */ }
-    this.warmupPromise = null;
+    // Phase 2: full backfill in background (non-blocking)
+    Promise.all(
+      [...this.readerCaches.values()].map(rc => rc.fullRefresh())
+    ).catch(() => {});
   }
 
   /** Force merged cache to rebuild on next access. */
