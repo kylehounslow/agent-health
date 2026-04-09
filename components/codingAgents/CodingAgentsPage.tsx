@@ -602,8 +602,11 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange, o
   });
   if (!stats) return <OverviewSkeleton />;
 
-  const isIncomplete = stats.warming && rangePreset !== 'today';
+  const isIncomplete = !!(stats.warming && rangePreset !== 'today');
   const hasData = stats.totalSessions > 0;
+
+  // When backfill is in progress for non-today ranges, show skeletons
+  if (isIncomplete && !hasData) return <TabSkeleton label="Loading historical data…" cards={6} charts={2} />;
 
   const agentPieData = stats.agents.map(a => ({
     name: AGENT_LABELS[a.agent] ?? a.agent,
@@ -649,7 +652,12 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange, o
       {rangePreset === 'today' && <TodaySummary stats={stats} />}
 
       {/* Key metric cards — grouped by Usage and Cost */}
-      <div className={isIncomplete ? 'animate-pulse' : ''}>
+      {isIncomplete && (
+        <div className="flex items-center gap-2">
+          <div className="h-4 w-4 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+          <span className="text-sm text-muted-foreground animate-pulse">Loading historical data…</span>
+        </div>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div>
           <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Usage</h3>
@@ -667,7 +675,6 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange, o
             <StatCard title="Cost / Completion" value={totalCompleted > 0 ? formatCost(stats.totalCost / totalCompleted) : 'N/A'} onClick={() => onTabChange('costs')} />
           </div>
         </div>
-      </div>
       </div>
 
       {/* Token cache breakdown */}
@@ -2841,13 +2848,6 @@ export const CodingAgentsPage: React.FC = () => {
           </Select>
         </div>
       </div>
-
-      {stats?.warming && rangePreset !== 'today' && (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground px-1">
-          <RefreshCw size={12} className="animate-spin" />
-          <span>Loading historical data…</span>
-        </div>
-      )}
 
       {error && agents.length === 0 ? (
         <Card>
