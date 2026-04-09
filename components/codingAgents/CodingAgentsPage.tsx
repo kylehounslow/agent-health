@@ -2724,14 +2724,16 @@ export const CodingAgentsPage: React.FC = () => {
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
 
+    let isInitial = true;
     const load = async () => {
       try {
-        setLoading(true);
+        if (isInitial) setLoading(true);
         const [agentData, statsData] = await Promise.all([
           fetchJson<{ agents: AgentInfo[] }>('/api/coding-agents/available'),
           fetchJson<CombinedStats>(buildQuery('/api/coding-agents/stats', range)),
         ]);
         if (cancelled) return;
+        isInitial = false;
         setAgents(agentData.agents);
         setStats(statsData);
 
