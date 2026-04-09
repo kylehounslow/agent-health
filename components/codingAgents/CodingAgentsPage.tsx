@@ -636,16 +636,16 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange, o
 
   return (
     <div className="space-y-6">
+      {/* Getting started banner — always visible when no data, dismissable when data exists */}
+      {(showGuide || !hasData) && (
+        <GettingStartedBanner agents={agents} rangePreset={rangePreset} onRangeChange={onRangeChange} onDismiss={dismissGuide} hasData={hasData} />
+      )}
       {/* Loading indicator for non-today ranges */}
       {isIncomplete && (
         <div className="flex items-center gap-2">
           <div className="h-4 w-4 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
           <span className="text-sm text-muted-foreground">Loading historical data…</span>
         </div>
-      )}
-      {/* Getting started banner — always visible when no data, dismissable when data exists */}
-      {(showGuide || !hasData) && (
-        <GettingStartedBanner agents={agents} rangePreset={rangePreset} onRangeChange={onRangeChange} onDismiss={dismissGuide} hasData={hasData} />
       )}
 
       {/* Show guide toggle when dismissed and there is data */}
