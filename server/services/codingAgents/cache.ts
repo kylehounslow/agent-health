@@ -188,7 +188,11 @@ export class ReaderCache {
 
   private async _doFullRefresh(): Promise<void> {
     try {
-      this.sessions = await this.reader.getSessions();
+      const fresh = await this.reader.getSessions();
+      // Merge: prefer fresh data, but keep fast-pass entries not in fresh set
+      const freshIds = new Set(fresh.map(s => s.session_id));
+      const kept = this.sessions.filter(s => !freshIds.has(s.session_id));
+      this.sessions = [...fresh, ...kept];
       const sigFn = DIR_SIGNATURE_FNS[this.reader.agentName];
       if (sigFn) this.signature = await sigFn();
       this.lastFullRefresh = Date.now();
