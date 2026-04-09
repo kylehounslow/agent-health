@@ -309,12 +309,18 @@ export class SessionCacheManager {
     return this.mergedCache!;
   }
 
+  /** How many days of data have been loaded so far. */
+  loadedDays(): number {
+    return this._loadedDays;
+  }
+
   /** Whether background data loading is still in progress. */
   isBackfilling(): boolean {
     return this.backfillInProgress;
   }
 
   private backfillInProgress = false;
+  private _loadedDays = 0;
 
   /** Start async warmup. Fast pass resolves quickly for immediate serving. */
   warmup(): void {
@@ -338,6 +344,7 @@ export class SessionCacheManager {
       await Promise.all(
         [...this.readerCaches.values()].map(rc => rc.fastRefresh(todayStart.getTime()))
       );
+      this._loadedDays = 1;
       this.invalidateMergedCache();
     } catch { /* non-fatal */ }
     this.warmupPromise = null; // fast pass done
@@ -350,6 +357,7 @@ export class SessionCacheManager {
         await Promise.all(
           [...this.readerCaches.values()].map(rc => rc.fastRefresh(now - 7 * 86_400_000))
         );
+        this._loadedDays = 7;
         this.invalidateMergedCache();
       } catch { /* non-fatal */ }
 
@@ -358,6 +366,7 @@ export class SessionCacheManager {
         await Promise.all(
           [...this.readerCaches.values()].map(rc => rc.fastRefresh(now - 30 * 86_400_000))
         );
+        this._loadedDays = 30;
         this.invalidateMergedCache();
       } catch { /* non-fatal */ }
 
@@ -370,6 +379,7 @@ export class SessionCacheManager {
         );
       } catch { /* non-fatal */ }
 
+      this._loadedDays = Infinity;
       this.backfillInProgress = false;
       this.invalidateMergedCache();
     })();

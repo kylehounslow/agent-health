@@ -69,6 +69,7 @@ interface CombinedStats {
   abandonedSessions: number;
   insights: Insight[];
   warming?: boolean;
+  loadedDays?: number;
 }
 interface Session {
   agent: string;
@@ -602,7 +603,8 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange, o
   });
   if (!stats) return <OverviewSkeleton />;
 
-  const isIncomplete = !!(stats.warming && rangePreset !== 'today');
+  const rangeDays: Record<DateRangePreset, number> = { today: 1, '7d': 7, '30d': 30, all: Infinity };
+  const isIncomplete = !!(stats.warming && (stats.loadedDays ?? Infinity) < rangeDays[rangePreset]);
   const hasData = stats.totalSessions > 0;
 
   // When backfill is in progress for non-today ranges, show skeletons
@@ -634,6 +636,13 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange, o
 
   return (
     <div className="space-y-6">
+      {/* Loading indicator for non-today ranges */}
+      {isIncomplete && (
+        <div className="flex items-center gap-2">
+          <div className="h-4 w-4 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+          <span className="text-sm text-muted-foreground">Loading historical data…</span>
+        </div>
+      )}
       {/* Getting started banner — always visible when no data, dismissable when data exists */}
       {(showGuide || !hasData) && (
         <GettingStartedBanner agents={agents} rangePreset={rangePreset} onRangeChange={onRangeChange} onDismiss={dismissGuide} hasData={hasData} />

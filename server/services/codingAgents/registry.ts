@@ -138,6 +138,11 @@ export class CodingAgentRegistry {
     return this.cacheManager.isBackfilling();
   }
 
+  /** How many days of data have been loaded so far. */
+  loadedDays(): number {
+    return this.cacheManager.loadedDays();
+  }
+
   /** Stop background refresh timers (for graceful shutdown). */
   stopBackgroundRefresh(): void {
     this.cacheManager.stopBackgroundRefresh();
