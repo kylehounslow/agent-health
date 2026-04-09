@@ -633,14 +633,7 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange, o
   };
 
   return (
-    <div className={`space-y-6${isIncomplete ? ' animate-pulse' : ''}`}>
-      {/* Loading indicator */}
-      {isIncomplete && (
-        <div className="flex items-center gap-2">
-          <div className="h-4 w-4 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
-          <span className="text-sm text-muted-foreground">Loading historical data…</span>
-        </div>
-      )}
+    <div className="space-y-6">
       {/* Getting started banner — always visible when no data, dismissable when data exists */}
       {(showGuide || !hasData) && (
         <GettingStartedBanner agents={agents} rangePreset={rangePreset} onRangeChange={onRangeChange} onDismiss={dismissGuide} hasData={hasData} />
@@ -663,17 +656,17 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange, o
         <div>
           <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Usage</h3>
           <div className="grid grid-cols-3 gap-3">
-            <StatCard title="Total Sessions" value={String(stats.totalSessions)} onClick={() => onTabChange('sessions')} />
+            <StatCard title="Total Sessions" value={String(stats.totalSessions)} onClick={() => onTabChange('sessions')} loading={isIncomplete} />
             <StatCard title="Agents Detected" value={String(agents.length)} onClick={() => onTabChange('workspace')} />
-            <StatCard title="Tool Success" value={formatPct(toolSuccessRate)} accent={toolSuccessRate < 0.9 ? 'red' : toolSuccessRate < 0.95 ? 'yellow' : 'green'} onClick={() => onTabChange('tools')} tooltip="Percentage of tool calls that completed without errors" />
+            <StatCard title="Tool Success" value={formatPct(toolSuccessRate)} accent={toolSuccessRate < 0.9 ? 'red' : toolSuccessRate < 0.95 ? 'yellow' : 'green'} onClick={() => onTabChange('tools')} tooltip="Percentage of tool calls that completed without errors" loading={isIncomplete} />
           </div>
         </div>
         <div>
           <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Cost</h3>
           <div className="grid grid-cols-3 gap-3">
-            <StatCard title="Estimated Cost" value={formatCost(stats.totalCost)} onClick={() => onTabChange('costs')} />
-            <StatCard title="Wasted Cost" value={stats.wastedCost > 0 ? formatCost(stats.wastedCost) : '$0.00'} accent={stats.wastedCost > 0.5 ? 'red' : stats.wastedCost > 0 ? 'yellow' : undefined} onClick={() => onTabChange('costs')} />
-            <StatCard title="Cost / Completion" value={totalCompleted > 0 ? formatCost(stats.totalCost / totalCompleted) : 'N/A'} onClick={() => onTabChange('costs')} />
+            <StatCard title="Estimated Cost" value={formatCost(stats.totalCost)} onClick={() => onTabChange('costs')} loading={isIncomplete} />
+            <StatCard title="Wasted Cost" value={stats.wastedCost > 0 ? formatCost(stats.wastedCost) : '$0.00'} accent={stats.wastedCost > 0.5 ? 'red' : stats.wastedCost > 0 ? 'yellow' : undefined} onClick={() => onTabChange('costs')} loading={isIncomplete} />
+            <StatCard title="Cost / Completion" value={totalCompleted > 0 ? formatCost(stats.totalCost / totalCompleted) : 'N/A'} onClick={() => onTabChange('costs')} loading={isIncomplete} />
           </div>
         </div>
       </div>
@@ -685,7 +678,10 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange, o
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {stats.agents.map(a => (
           <Card key={a.agent} className="cursor-pointer hover:border-primary/50 transition-colors" onClick={() => { onAgentFilter?.(a.agent); onTabChange('sessions'); }}>
-            <CardHeader className="pb-2">
+            <CardHeader className="pb-2 relative">
+              {isIncomplete && (
+                <div className="absolute top-2 right-2 h-3 w-3 rounded-full border-[1.5px] border-muted-foreground/30 border-t-muted-foreground animate-spin" />
+              )}
               <div className="flex items-center gap-2">
                 <div className="w-3 h-3 rounded-full" style={{ backgroundColor: AGENT_COLORS[a.agent] }} />
                 <CardTitle className="text-sm font-medium">{AGENT_LABELS[a.agent] ?? a.agent}</CardTitle>
@@ -714,7 +710,8 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange, o
       {/* Charts row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card className="cursor-pointer hover:border-primary/50 transition-colors" onClick={() => onTabChange('sessions')}>
-          <CardHeader className="pb-2">
+          <CardHeader className="pb-2 relative">
+            {isIncomplete && <div className="absolute top-2 right-2 h-3 w-3 rounded-full border-[1.5px] border-muted-foreground/30 border-t-muted-foreground animate-spin" />}
             <CardTitle className="text-sm font-medium">Sessions by Agent</CardTitle>
           </CardHeader>
           <CardContent>
@@ -742,7 +739,8 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange, o
         </Card>
 
         <Card className="cursor-pointer hover:border-primary/50 transition-colors" onClick={() => onTabChange('performance')}>
-          <CardHeader className="pb-2">
+          <CardHeader className="pb-2 relative">
+            {isIncomplete && <div className="absolute top-2 right-2 h-3 w-3 rounded-full border-[1.5px] border-muted-foreground/30 border-t-muted-foreground animate-spin" />}
             <CardTitle className="text-sm font-medium">Daily Activity (Last 30 Days)</CardTitle>
           </CardHeader>
           <CardContent>
@@ -2587,9 +2585,9 @@ function TokenCacheBar({ stats }: { stats: CombinedStats }) {
 
 // ─── Shared Components ────────────────────────────────────────────────────────
 
-function StatCard({ title, value, accent, onClick, trend, trendLabel, tooltip }: {
+function StatCard({ title, value, accent, onClick, trend, trendLabel, tooltip, loading }: {
   title: string; value: string; accent?: 'red' | 'yellow' | 'green'; onClick?: () => void;
-  trend?: number; trendLabel?: string; tooltip?: string;
+  trend?: number; trendLabel?: string; tooltip?: string; loading?: boolean;
 }) {
   const colorClass = accent === 'red' ? 'text-red-600 dark:text-red-400'
     : accent === 'yellow' ? 'text-yellow-600 dark:text-yellow-400'
@@ -2597,7 +2595,10 @@ function StatCard({ title, value, accent, onClick, trend, trendLabel, tooltip }:
     : '';
   return (
     <Card className={onClick ? 'cursor-pointer hover:border-primary/50 transition-colors' : ''} onClick={onClick}>
-      <CardContent className="pt-4 pb-3">
+      <CardContent className="pt-4 pb-3 relative">
+        {loading && (
+          <div className="absolute top-2 right-2 h-3 w-3 rounded-full border-[1.5px] border-muted-foreground/30 border-t-muted-foreground animate-spin" />
+        )}
         <p className="text-xs text-muted-foreground flex items-center gap-1">
           {title}
           {tooltip && (
