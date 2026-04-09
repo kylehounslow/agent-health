@@ -340,10 +340,12 @@ export class SessionCacheManager {
     } catch { /* non-fatal */ }
     this.warmupPromise = null; // fast pass done
 
-    // Phase 2: full backfill in background
+    // Phase 2: full backfill in background — invalidate after each reader
     this.backfillInProgress = true;
     Promise.all(
-      [...this.readerCaches.values()].map(rc => rc.fullRefresh())
+      [...this.readerCaches.values()].map(rc =>
+        rc.fullRefresh().then(() => this.invalidateMergedCache())
+      )
     ).catch(() => {}).finally(() => {
       this.backfillInProgress = false;
       this.invalidateMergedCache();
