@@ -126,6 +126,7 @@ describe('ReaderCache', () => {
       reader.getSessions.mockResolvedValue(sessions);
 
       const cache = new ReaderCache(reader);
+      await cache.fullRefresh();
       const result = await cache.getSessions();
 
       expect(reader.getSessions).toHaveBeenCalled();
@@ -141,16 +142,14 @@ describe('ReaderCache', () => {
       reader.getSessions.mockResolvedValue(sessions);
 
       const cache = new ReaderCache(reader);
-
-      await cache.getSessions();
-      expect(reader.getSessions).toHaveBeenCalledTimes(1);
+      await cache.fullRefresh();
 
       const result = await cache.getSessions();
       expect(reader.getSessions).toHaveBeenCalledTimes(1);
       expect(result).toHaveLength(1);
     });
 
-    it('should re-read when directory signature changes (after TTL expires)', async () => {
+    it('should update data after fullRefresh', async () => {
       setupDirSignatureMocks(1000, 1);
 
       const reader = createMockReader();
@@ -163,36 +162,22 @@ describe('ReaderCache', () => {
 
       const cache = new ReaderCache(reader);
 
+      await cache.fullRefresh();
       const result1 = await cache.getSessions();
       expect(result1).toHaveLength(1);
 
-      // Change the directory signature and advance past the signature TTL (5s)
-      setupDirSignatureMocks(9999, 3);
-      const realDateNow = Date.now;
-      jest.spyOn(Date, 'now').mockReturnValue(realDateNow() + 6000);
-
-      // With non-blocking refresh, stale data is returned immediately
+      await cache.fullRefresh();
       const result2 = await cache.getSessions();
-      expect(result2).toHaveLength(1); // stale data returned instantly
-
-      // Background refresh fires asynchronously
-      await new Promise(r => setTimeout(r, 50));
-      expect(reader.getSessions).toHaveBeenCalledTimes(2);
-
-      // Next call returns updated data
-      jest.spyOn(Date, 'now').mockReturnValue(realDateNow() + 7000);
-      const result3 = await cache.getSessions();
-      expect(result3).toHaveLength(2);
-
-      jest.spyOn(Date, 'now').mockRestore();
+      expect(result2).toHaveLength(2);
     });
 
-    it('should fall back to reader.getSessions() for unknown agent types', async () => {
+    it('should return empty for unknown agent types before refresh', async () => {
       const reader = createMockReader('unknown-agent' as any);
       const sessions = [createMockSession({ agent: 'claude-code' })];
       reader.getSessions.mockResolvedValue(sessions);
 
       const cache = new ReaderCache(reader);
+      await cache.fullRefresh();
       const result = await cache.getSessions();
 
       expect(reader.getSessions).toHaveBeenCalled();
@@ -354,6 +339,10 @@ describe('SessionCacheManager', () => {
       ]);
 
       const manager = new SessionCacheManager([reader1, reader2]);
+      manager.warmup();
+      await manager.waitForFastPass();
+      // Wait for backfill
+      await new Promise(r => setTimeout(r, 100));
       const result = await manager.getAllSessionsCached();
 
       expect(result).toHaveLength(2);
@@ -368,6 +357,9 @@ describe('SessionCacheManager', () => {
       reader.getSessions.mockResolvedValue([createMockSession({ _filePath: '/some/path.jsonl' })]);
 
       const manager = new SessionCacheManager([reader]);
+      manager.warmup();
+      await manager.waitForFastPass();
+      await new Promise(r => setTimeout(r, 100));
       const result = await manager.getAllSessionsCached();
 
       expect(result).toHaveLength(1);

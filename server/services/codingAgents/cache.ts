@@ -149,39 +149,11 @@ export class ReaderCache {
   /** Return cached sessions, refreshing if directory signature changed.
    *  Skips signature check if within TTL window to avoid blocking the event loop. */
   async getSessions(): Promise<AgentSession[]> {
-    // Never block on a refresh — always return what we have
-    if (this.sessions.length > 0) {
-      // Trigger background refresh if signature is stale, but don't wait
-      if ((Date.now() - this.lastSignatureCheck) >= SIGNATURE_TTL_MS) {
-        this.maybeRefreshInBackground();
-      }
-      return this.sessions;
-    }
-
-    // No cached data yet — if a refresh is in progress, wait for it
-    if (this.refreshLock) {
+    // If first load and refresh in progress, wait for it
+    if (this.sessions.length === 0 && this.refreshLock) {
       await this.refreshLock;
-      return this.sessions;
     }
-
-    // First load — must refresh
-    await this.fullRefresh();
     return this.sessions;
-  }
-
-  /** Trigger a background refresh if signature changed. Non-blocking. */
-  private maybeRefreshInBackground(): void {
-    if (this.refreshLock) return; // already refreshing
-    const sigFn = DIR_SIGNATURE_FNS[this.reader.agentName];
-    if (!sigFn) return;
-
-    // Fire and forget
-    sigFn().then(currentSig => {
-      this.lastSignatureCheck = Date.now();
-      if (currentSig !== this.signature) {
-        this.fullRefresh().catch(() => {});
-      }
-    }).catch(() => {});
   }
 
   /** Full refresh: re-read all sessions from disk. */
@@ -370,6 +342,7 @@ export class SessionCacheManager {
       [...this.readerCaches.values()].map(rc => rc.fullRefresh())
     ).catch(() => {}).finally(() => {
       this.backfillInProgress = false;
+      this.invalidateMergedCache();
     });
   }
 
