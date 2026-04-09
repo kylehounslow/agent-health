@@ -339,7 +339,7 @@ export class SessionCacheManager {
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
 
-    // Phase 1: today only — sub-second, unblocks server
+    // Phase 1: today + 7 days in parallel — unblocks server
     try {
       await Promise.all(
         [...this.readerCaches.values()].map(rc => rc.fastRefresh(todayStart.getTime()))

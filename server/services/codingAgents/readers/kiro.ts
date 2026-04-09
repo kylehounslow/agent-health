@@ -501,13 +501,14 @@ async function listCliDbSessionsViaShell(sinceMs?: number): Promise<AgentSession
 
     const results = [...smallResults];
 
-    // Also include large rows — lightweight metadata only (json_extract too slow/OOM-prone)
-    try {
-      const largeIndexRaw = await sqlite3Json(
-        KIRO_CLI_DB,
-        'SELECT key, conversation_id, created_at, updated_at FROM conversations_v2 WHERE length(value) >= 10000000 ORDER BY updated_at DESC',
-        5 * 1024 * 1024,
-      );
+    // Also include large rows — skip during fast pass (length() scan is ~28s)
+    if (!sinceMs) {
+      try {
+        const largeIndexRaw = await sqlite3Json(
+          KIRO_CLI_DB,
+          'SELECT key, conversation_id, created_at, updated_at FROM conversations_v2 WHERE length(value) >= 10000000 ORDER BY updated_at DESC',
+          5 * 1024 * 1024,
+        );
       const largeRows: Array<{ key: string; conversation_id: string; created_at: number; updated_at: number }> = JSON.parse(largeIndexRaw);
       for (const row of largeRows) {
         const startTime = new Date(row.created_at).toISOString();
@@ -536,6 +537,7 @@ async function listCliDbSessionsViaShell(sinceMs?: number): Promise<AgentSession
         });
       }
     } catch { /* skip large rows */ }
+    } // end if (!sinceMs)
 
     return results;
   } catch {

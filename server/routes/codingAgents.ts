@@ -64,7 +64,7 @@ router.get('/api/coding-agents/stats', async (req: Request, res: Response) => {
     res.json({
       ...stats,
       warming: codingAgentRegistry.isBackfilling(),
-      loadedDays: codingAgentRegistry.loadedDays(),
+      loadedDays: Math.min(codingAgentRegistry.loadedDays(), 99999),
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
