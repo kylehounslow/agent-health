@@ -633,7 +633,14 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange, o
   };
 
   return (
-    <div className="space-y-6">
+    <div className={`space-y-6${isIncomplete ? ' animate-pulse' : ''}`}>
+      {/* Loading indicator */}
+      {isIncomplete && (
+        <div className="flex items-center gap-2">
+          <div className="h-4 w-4 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+          <span className="text-sm text-muted-foreground">Loading historical data…</span>
+        </div>
+      )}
       {/* Getting started banner — always visible when no data, dismissable when data exists */}
       {(showGuide || !hasData) && (
         <GettingStartedBanner agents={agents} rangePreset={rangePreset} onRangeChange={onRangeChange} onDismiss={dismissGuide} hasData={hasData} />
@@ -652,12 +659,6 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange, o
       {rangePreset === 'today' && <TodaySummary stats={stats} />}
 
       {/* Key metric cards — grouped by Usage and Cost */}
-      {isIncomplete && (
-        <div className="flex items-center gap-2">
-          <div className="h-4 w-4 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
-          <span className="text-sm text-muted-foreground animate-pulse">Loading historical data…</span>
-        </div>
-      )}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div>
           <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Usage</h3>
