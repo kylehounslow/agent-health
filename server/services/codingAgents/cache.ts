@@ -329,9 +329,11 @@ export class SessionCacheManager {
   private fastPassDone: Promise<void> | null = null;
 
   private async _doWarmup(): Promise<void> {
-    // Phase 1: today only — sub-second
+    const now = Date.now();
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
+
+    // Phase 1: today only — sub-second, unblocks server
     try {
       await Promise.all(
         [...this.readerCaches.values()].map(rc => rc.fastRefresh(todayStart.getTime()))
@@ -340,16 +342,37 @@ export class SessionCacheManager {
     } catch { /* non-fatal */ }
     this.warmupPromise = null; // fast pass done
 
-    // Phase 2: full backfill in background — invalidate after each reader
+    // Phase 2: progressive backfill in background
     this.backfillInProgress = true;
-    Promise.all(
-      [...this.readerCaches.values()].map(rc =>
-        rc.fullRefresh().then(() => this.invalidateMergedCache())
-      )
-    ).catch(() => {}).finally(() => {
+    (async () => {
+      // 7 days (~2s)
+      try {
+        await Promise.all(
+          [...this.readerCaches.values()].map(rc => rc.fastRefresh(now - 7 * 86_400_000))
+        );
+        this.invalidateMergedCache();
+      } catch { /* non-fatal */ }
+
+      // 30 days (~20s)
+      try {
+        await Promise.all(
+          [...this.readerCaches.values()].map(rc => rc.fastRefresh(now - 30 * 86_400_000))
+        );
+        this.invalidateMergedCache();
+      } catch { /* non-fatal */ }
+
+      // Full scan (slow — only if needed)
+      try {
+        await Promise.all(
+          [...this.readerCaches.values()].map(rc =>
+            rc.fullRefresh().then(() => this.invalidateMergedCache())
+          )
+        );
+      } catch { /* non-fatal */ }
+
       this.backfillInProgress = false;
       this.invalidateMergedCache();
-    });
+    })();
   }
 
   /** Force merged cache to rebuild on next access. */
