@@ -21,6 +21,7 @@ export interface UserAgentConfig {
   endpoint: string;
   description?: string;
   enabled?: boolean;
+  models: string[];
   headers?: Record<string, string>;
   useTraces?: boolean;
   connectorType?: ConnectorProtocol;
@@ -137,6 +138,15 @@ export interface UserConfig {
    * Judge configuration
    */
   judge?: JudgeConfig;
+
+  /**
+   * Enable or disable the Coding Agent Analytics feature.
+   * When false, no coding agent routes are mounted, no background timers
+   * run, and the "Coding Agents" nav tab is hidden.
+   * Can also be disabled via AGENT_HEALTH_DISABLE_CODING_ANALYTICS=true env var.
+   * @default true
+   */
+  codingAgentAnalytics?: boolean;
 
   /**
    * Whether to extend default config or replace entirely
